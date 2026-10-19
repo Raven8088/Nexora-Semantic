@@ -1,0 +1,12 @@
+package com.nexora.semantic.domain.audit;
+
+public enum AuditAction {
+    TENANT_REGISTERED,
+    TENANT_UPDATED,
+    TENANT_SUSPENDED,
+    TENANT_REACTIVATED,
+    DATA_SOURCE_REGISTERED,
+    DATA_SOURCE_UPDATED,
+    DATA_SOURCE_ARCHIVED,
+    DATA_SOURCE_REACTIVATED
+}

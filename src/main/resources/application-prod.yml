@@ -1,0 +1,15 @@
+# Production profile (audit finding I3).
+# - The application connects only with the DML role (SEMANTIC_DB_APP_USER / SEMANTIC_DB_APP_PASSWORD).
+# - Flyway never runs during startup: migrations are applied beforehand by the separate migration job
+#   (com.nexora.semantic.infrastructure.migration.SchemaMigrationMain) with its own database identity.
+# - Never provide SEMANTIC_DB_OWNER_* or SEMANTIC_MIGRATION_* variables to the application.
+# - At startup the application verifies that its role cannot change the database structure and refuses to start
+#   otherwise.
+spring:
+  flyway:
+    enabled: false
+
+nexora:
+  semantic:
+    database:
+      enforce-least-privilege: true

@@ -1,0 +1,142 @@
+{
+  "realm": "nexora",
+  "displayName": "Nexora (development only)",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "accessTokenLifespan": 900,
+  "roles": {
+    "realm": [
+      { "name": "VIEWER" },
+      { "name": "EDITOR" },
+      { "name": "APPROVER" },
+      { "name": "STEWARD" },
+      { "name": "AUDITOR" },
+      { "name": "REPORTS_CLIENT" },
+      { "name": "AI_AGENT" },
+      { "name": "PLATFORM_ADMIN" }
+    ]
+  },
+  "groups": [
+    { "name": "tenant-demo", "attributes": { "tenant": ["${KC_TENANT_DEMO_ID:00000000-0000-0000-0000-000000000000}"] } },
+    { "name": "tenant-other", "attributes": { "tenant": ["${KC_TENANT_OTHER_ID:00000000-0000-0000-0000-000000000000}"] } }
+  ],
+  "clientScopes": [
+    {
+      "name": "nexora-semantic",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "false" },
+      "protocolMappers": [
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "config": { "access.token.claim": "true", "introspection.token.claim": "true" }
+        },
+        {
+          "name": "audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.custom.audience": "nexora-semantic", "access.token.claim": "true", "id.token.claim": "false" }
+        },
+        {
+          "name": "tenant",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "tenant", "claim.name": "tenant", "jsonType.label": "String",
+            "aggregate.attrs": "false", "multivalued": "false",
+            "access.token.claim": "true", "id.token.claim": "false", "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles", "jsonType.label": "String", "multivalued": "true",
+            "access.token.claim": "true", "id.token.claim": "false", "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "nexora-semantic-dev",
+      "name": "Nexora Semantic (development users)",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["http://localhost:*"],
+      "webOrigins": ["+"],
+      "defaultClientScopes": ["nexora-semantic"],
+      "protocolMappers": [
+        {
+          "name": "principal-type",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": { "claim.name": "principal_type", "claim.value": "HUMAN", "jsonType.label": "String", "access.token.claim": "true" }
+        }
+      ]
+    },
+    {
+      "clientId": "nexora-reports-dev",
+      "name": "Nexora Reports (development service client)",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${KC_REPORTS_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "defaultClientScopes": ["nexora-semantic"],
+      "protocolMappers": [
+        {
+          "name": "principal-type",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": { "claim.name": "principal_type", "claim.value": "SERVICE", "jsonType.label": "String", "access.token.claim": "true" }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "platform.admin", "enabled": true, "email": "platform.admin@nexora.dev", "emailVerified": true,
+      "firstName": "Platform", "lastName": "Admin",
+      "credentials": [{ "type": "password", "value": "${KC_DEV_USER_PASSWORD}", "temporary": false }],
+      "realmRoles": ["PLATFORM_ADMIN"]
+    },
+    {
+      "username": "steward.demo", "enabled": true, "email": "steward.demo@nexora.dev", "emailVerified": true,
+      "firstName": "Steward", "lastName": "Demo",
+      "credentials": [{ "type": "password", "value": "${KC_DEV_USER_PASSWORD}", "temporary": false }],
+      "realmRoles": ["STEWARD"], "groups": ["/tenant-demo"]
+    },
+    {
+      "username": "viewer.demo", "enabled": true, "email": "viewer.demo@nexora.dev", "emailVerified": true,
+      "firstName": "Viewer", "lastName": "Demo",
+      "credentials": [{ "type": "password", "value": "${KC_DEV_USER_PASSWORD}", "temporary": false }],
+      "realmRoles": ["VIEWER"], "groups": ["/tenant-demo"]
+    },
+    {
+      "username": "auditor.demo", "enabled": true, "email": "auditor.demo@nexora.dev", "emailVerified": true,
+      "firstName": "Auditor", "lastName": "Demo",
+      "credentials": [{ "type": "password", "value": "${KC_DEV_USER_PASSWORD}", "temporary": false }],
+      "realmRoles": ["AUDITOR"], "groups": ["/tenant-demo"]
+    },
+    {
+      "username": "steward.other", "enabled": true, "email": "steward.other@nexora.dev", "emailVerified": true,
+      "firstName": "Steward", "lastName": "Other",
+      "credentials": [{ "type": "password", "value": "${KC_DEV_USER_PASSWORD}", "temporary": false }],
+      "realmRoles": ["STEWARD"], "groups": ["/tenant-other"]
+    },
+    {
+      "username": "service-account-nexora-reports-dev", "enabled": true,
+      "serviceAccountClientId": "nexora-reports-dev",
+      "realmRoles": ["REPORTS_CLIENT"], "groups": ["/tenant-demo"]
+    }
+  ]
+}

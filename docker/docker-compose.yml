@@ -1,0 +1,46 @@
+# Development environment for Nexora Semantic Engine. NOT for production.
+#   cp docker/.env.example docker/.env   (and change the values)
+#   docker compose -f docker/docker-compose.yml --env-file docker/.env up -d
+name: nexora-semantic-dev
+
+services:
+  postgres:
+    image: postgres:17.6
+    environment:
+      POSTGRES_DB: nexora_semantic
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in docker/.env}
+      SEMANTIC_DB_OWNER_USER: ${SEMANTIC_DB_OWNER_USER:-nexora_semantic_owner}
+      SEMANTIC_DB_OWNER_PASSWORD: ${SEMANTIC_DB_OWNER_PASSWORD:?set SEMANTIC_DB_OWNER_PASSWORD in docker/.env}
+      SEMANTIC_DB_APP_USER: ${SEMANTIC_DB_APP_USER:-nexora_semantic_app}
+      SEMANTIC_DB_APP_PASSWORD: ${SEMANTIC_DB_APP_PASSWORD:?set SEMANTIC_DB_APP_PASSWORD in docker/.env}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - semantic-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d nexora_semantic"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Development identity provider only. Production uses any OIDC provider (decision D2).
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4.0
+    command: ["start-dev", "--import-realm", "--http-port=8180"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:?set KC_BOOTSTRAP_ADMIN_PASSWORD in docker/.env}
+      KC_DEV_USER_PASSWORD: ${KC_DEV_USER_PASSWORD:?set KC_DEV_USER_PASSWORD in docker/.env}
+      KC_REPORTS_CLIENT_SECRET: ${KC_REPORTS_CLIENT_SECRET:?set KC_REPORTS_CLIENT_SECRET in docker/.env}
+      # Tenant UUIDs returned by POST /api/v1/admin/tenants (decision D2: register first, then configure the IdP).
+      KC_TENANT_DEMO_ID: ${KC_TENANT_DEMO_ID:-00000000-0000-0000-0000-000000000000}
+      KC_TENANT_OTHER_ID: ${KC_TENANT_OTHER_ID:-00000000-0000-0000-0000-000000000000}
+    ports:
+      - "127.0.0.1:8180:8180"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+
+volumes:
+  semantic-postgres:

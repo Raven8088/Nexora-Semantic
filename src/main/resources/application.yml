@@ -1,0 +1,65 @@
+spring:
+  application:
+    name: nexora-semantic
+  # Application connection: DML-only role. Never the schema owner.
+  datasource:
+    url: ${SEMANTIC_DB_URL:jdbc:postgresql://localhost:5433/nexora_semantic?currentSchema=semantic}
+    username: ${SEMANTIC_DB_APP_USER:nexora_semantic_app}
+    password: ${SEMANTIC_DB_APP_PASSWORD:}
+    hikari:
+      maximum-pool-size: ${SEMANTIC_DB_POOL_SIZE:10}
+  # Migrations run as the schema owner (separate credentials, same database URL).
+  flyway:
+    user: ${SEMANTIC_DB_OWNER_USER:nexora_semantic_owner}
+    password: ${SEMANTIC_DB_OWNER_PASSWORD:}
+    schemas: semantic
+    default-schema: semantic
+    placeholders:
+      appRole: ${SEMANTIC_DB_APP_USER:nexora_semantic_app}
+  jackson:
+    # Unknown JSON properties are rejected: clients cannot smuggle fields such as connection credentials.
+    deserialization:
+      fail-on-unknown-properties: true
+    default-property-inclusion: non_null
+  # OAuth2/OIDC: SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI is mandatory (the issuer is always
+  # validated); ..._JWK_SET_URI may be added. Without the issuer the application refuses to start (fail closed).
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          audiences: ${SEMANTIC_OIDC_AUDIENCE:nexora-semantic}
+  mvc:
+    problemdetails:
+      enabled: false
+  # Spring Boot 4: formerly server.error.* (no longer supported). Error bodies never expose internals.
+  web:
+    error:
+      include-message: never
+      include-stacktrace: never
+      include-binding-errors: never
+      include-exception: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    level: "%5p [cid:%X{correlationId:-}]"
+
+nexora:
+  semantic:
+    security:
+      # Claim names; a dotted path reaches nested claims (e.g. realm_access.roles).
+      # tenant: canonical tenant UUID (optional only for PLATFORM_ADMIN tokens).
+      # principal_type: exactly HUMAN, SERVICE or AI (mandatory).
+      tenant-claim: tenant
+      principal-type-claim: principal_type
+      roles-claim: roles

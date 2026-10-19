@@ -1,0 +1,9 @@
+# Local development against docker/docker-compose.yml (PostgreSQL + Keycloak).
+# Keycloak is a development convenience only; production uses any OIDC provider.
+# Database passwords come from the environment (see docker/.env.example).
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${SEMANTIC_OIDC_ISSUER_URI:http://localhost:8180/realms/nexora}
