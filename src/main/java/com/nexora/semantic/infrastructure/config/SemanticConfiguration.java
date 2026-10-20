@@ -9,6 +9,10 @@ import com.nexora.semantic.application.catalog.SemanticRelationshipService;
 import com.nexora.semantic.application.port.AuditLog;
 import com.nexora.semantic.application.port.SemanticDefinitionRepository;
 import com.nexora.semantic.application.port.SemanticRelationshipRepository;
+import com.nexora.semantic.application.planning.LogicalPlanService;
+import com.nexora.semantic.application.port.LogicalPlanRepository;
+import com.nexora.semantic.application.resolution.SemanticResolutionService;
+import com.nexora.semantic.infrastructure.persistence.JdbcLogicalPlanRepository;
 import com.nexora.semantic.infrastructure.persistence.JdbcSemanticDefinitionRepository;
 import com.nexora.semantic.infrastructure.persistence.JdbcSemanticRelationshipRepository;
 import com.nexora.semantic.application.port.DataSourceRepository;
@@ -143,6 +147,33 @@ public class SemanticConfiguration {
                                                                     PhysicalObjectRepository objects,
                                                                     AuditLog auditLog) {
         return new RelationshipInvalidationService(relationships, objects, auditLog);
+    }
+
+    // --- S4.1: semantic resolution (read-only) ---
+
+    @Bean
+    SemanticResolutionService semanticResolutionService(DataSourceRepository dataSources,
+                                                        MetadataSnapshotRepository snapshots,
+                                                        SemanticDefinitionRepository definitions,
+                                                        PhysicalObjectRepository objects,
+                                                        SemanticRelationshipService relationships) {
+        return new SemanticResolutionService(dataSources, snapshots, definitions, objects, relationships);
+    }
+
+    // --- S4.2: logical plans ---
+
+    @Bean
+    LogicalPlanRepository logicalPlanRepository(JdbcClient jdbcClient, ObjectMapper objectMapper) {
+        return new JdbcLogicalPlanRepository(jdbcClient, objectMapper);
+    }
+
+    @Bean
+    LogicalPlanService logicalPlanService(DataSourceRepository dataSources, SemanticResolutionService resolutions,
+                                          SemanticRelationshipService relationships,
+                                          SemanticDefinitionRepository definitions, PhysicalObjectRepository objects,
+                                          LogicalPlanRepository plans, AuditLog auditLog, Clock clock) {
+        return new LogicalPlanService(dataSources, resolutions, relationships, definitions, objects, plans, auditLog,
+                clock);
     }
 
     @Bean

@@ -3,8 +3,9 @@
 Transforma los metadatos técnicos de **Nexora Discovery** en conocimiento empresarial validado, versionado y
 reutilizable por **Nexora Reports**. Arquitectura, decisiones y plan de etapas: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**Estado:** S1, S2 Basic y S3 Basic completadas; **S3.1** (relaciones semánticas) implementada, sobre Spring
-Boot 4.1.1 y Java 21.
+**Estado:** S1, S2 Basic y S3 Basic completadas; S3.1 (relaciones semánticas), S4.1 (resolución semántica) y
+**S4.2** (planificación lógica segura) implementadas, sobre Spring Boot 4.1.1 y Java 21. Semantic produce planes
+lógicos; **no** los traduce a SQL ni los ejecuta (Nexora Reports e Intelligence no están implementados).
 - **S1:** tenants, fuentes de datos, seguridad OAuth2/JWT por permisos, aislamiento multiempresa, auditoría
   append-only, errores RFC 7807 y migraciones de producción en un job independiente.
 - **S2 Basic:** importación persistente de los metadatos de Nexora Discovery (esquemas, tablas, vistas, columnas,
@@ -14,7 +15,12 @@ Boot 4.1.1 y Java 21.
 - **S3.1:** catálogo de relaciones entre tablas o vistas (simples, compuestas, entre esquemas), creadas desde FK
   o declaradas por personas, con evidencia física separada de la cardinalidad declarada, sugerencias
   deterministas y un contrato tipado preparado para S4.
-- **Pendiente:** resolución semántica (S4: todavía no implementada), integración con IA (S5), consultas SQL y Excel.
+- **S4.1:** resolución de solo lectura de una solicitud estructurada (métricas, dimensiones, filtros tipados y
+  relaciones preferidas) en una resolución tipada, determinista y validada, sin SQL ni rutas.
+- **S4.2:** plan lógico tipado, determinista y seguro (grano, JOIN solo hacia PK, filtros por etapa), persistido
+  de forma inmutable con copias del catálogo usado y comprobación de vigencia.
+- **Pendiente:** Nexora Reports (traducción y ejecución del plan), integración con IA (S5), drill-across, unidades
+  y monedas, consultas SQL y Excel.
 
 Estado detallado: [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) · Historial:
 [docs/CHANGELOG.md](docs/CHANGELOG.md).
@@ -248,6 +254,68 @@ Reglas:
 - **Contrato para S4:** `GET …/relationships/{relId}/contract` (ids, pares, cardinalidad, evidencia, JOIN
   autorizados, `usable`, motivos de invalidez y versión). No resuelve rutas ni genera SQL.
 
+## Resolución semántica (S4.1)
+
+Una cuenta de servicio con el rol `REPORTS_CLIENT` (permiso `semantic:resolve`) envía identificadores de métricas
+y dimensiones **aprobadas** y filtros tipados. Recibe las definiciones, sus objetos y columnas físicos, los filtros
+validados y las revisiones observadas. No hay SQL, JOIN ni ruta; eso es S4.2.
+
+```bash
+curl -X POST -H "Authorization: Bearer $REPORTS_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"metrics":["<id suma_valor>","<id num_lecturas>"],"dimensions":["<id fecha>","<id nota>"],
+       "filters":[{"definitionId":"<id fecha>","operator":"GTE","value":"2026-01-01T00:00:00+01:00"},
+                  {"definitionId":"<id nota>","operator":"IN","values":["ok","revisar"]},
+                  {"definitionId":"<id suma_valor>","operator":"GT","value":100.5}],
+       "preferredRelationships":[]}' \
+  http://localhost:8080/api/v1/data-sources/<id>/semantic-resolutions
+```
+
+Reglas:
+- **Qué se acepta:** solo definiciones APPROVED cuya vinculación física sigue siendo válida. Las DRAFT, INACTIVE o
+  invalidadas por una importación, y las de otra fuente u otro tenant, devuelven 422 con diagnósticos tipados
+  (`errors[{code, field, message, causes}]`).
+- **Filtros sobre una dimensión:** se aplican antes de agregar.
+  - En números, fechas y horas se admiten todos los operadores.
+  - En texto, UUID y booleanos solo igualdad, `IN` (salvo booleanos) y nulos.
+  - Los valores temporales van en ISO-8601; los `timestamptz` se normalizan a UTC.
+- **Filtros sobre una métrica solicitada:** se aplican después de agregar y solo admiten comparaciones numéricas.
+- **Relaciones preferidas:** se validan (deben ser utilizables), pero nunca se eligen como ruta.
+- **Consistencia:** cada resolución se lee en una única instantánea (`REPEATABLE READ`). La respuesta incluye las
+  versiones, el último snapshot y una huella (`fingerprint`) que cambia si cambia cualquier cosa observada.
+
+## Planes lógicos (S4.2)
+
+Con el permiso `semantic:resolve`, la misma solicitud que S4.1 (más la granularidad de cada dimensión temporal)
+produce un plan lógico persistido:
+
+```bash
+curl -X POST -H "Authorization: Bearer $REPORTS_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"metrics":["<id suma_valor>"],"dimensions":["<id fecha>","<id nombre_equipo>"],
+       "preferredRelationships":["<id measurements.equipment_dbid = equipment.id>"],
+       "timeGranularities":[{"dimensionId":"<id fecha>","granularity":"MONTH"}]}' \
+  http://localhost:8080/api/v1/data-sources/<id>/logical-plans
+# Histórico y vigencia actual (sin modificar el plan)
+curl -H "Authorization: Bearer $REPORTS_TOKEN" http://localhost:8080/api/v1/data-sources/<id>/logical-plans/<planId>
+curl -H "Authorization: Bearer $REPORTS_TOKEN" http://localhost:8080/api/v1/data-sources/<id>/logical-plans/<planId>/validity
+```
+
+Reglas:
+- **Grano:** todas las métricas deben agregar filas de la misma tabla o vista; si no, `INCOMPATIBLE_GRAIN`.
+- **Rutas:** solo relaciones de S3.1 aprobadas y utilizables, con sus pares exactos de columnas. Si hay varias
+  rutas, el plan se rechaza (`AMBIGUOUS_PATH`) hasta que la solicitud indique las relaciones preferidas.
+- **Seguridad de agregación:** solo se une hacia un lado único por PK exacta. Una cardinalidad declarada no es
+  prueba. Por ejemplo, `measurements.equipment_dbid = equipment.dbid` está aprobada, pero agregar mediciones
+  después de ese JOIN se rechaza con `UNIQUENESS_NOT_PROVEN`.
+- **JOIN:**
+  - se usa LEFT si está autorizado de origen a destino;
+  - en sentido inverso solo se usa INNER;
+  - nunca se pone un INNER después de un LEFT;
+  - los filtros sobre el lado opcional de un LEFT se rechazan.
+- **Persistencia:** el plan es inmutable e incluye copias de las definiciones, las relaciones, la evidencia y los
+  objetos físicos que usa.
+- **Vigencia:** `validity` devuelve `CURRENT`, `CURRENT_WITH_CHANGES` o `STALE` sin reescribir nada.
+- **Sin SQL:** no se genera ni se ejecuta SQL.
+
 ## API
 
 | Método y ruta | Permiso |
@@ -265,6 +333,8 @@ Reglas:
 | `POST /api/v1/data-sources/{id}/relationships` · `POST …/relationships/from-foreign-key` · `PUT …/relationships/{relId}` | `semantic:proposal:write` |
 | `GET …/relationships?status&origin&objectId` · `GET …/relationships/{relId}` · `GET …/relationships/{relId}/contract` · `GET /api/v1/data-sources/{id}/relationship-candidates` | `semantic:catalog:read` |
 | `POST …/relationships/{relId}/approve` · `POST …/relationships/{relId}/deactivate` | `semantic:proposal:approve` (solo HUMAN, distinto del autor y del último editor) |
+| `POST /api/v1/data-sources/{id}/semantic-resolutions` | `semantic:resolve` (rol `REPORTS_CLIENT`; nunca AI) |
+| `POST /api/v1/data-sources/{id}/logical-plans` · `GET …/logical-plans/{planId}` · `GET …/logical-plans/{planId}/validity` | `semantic:resolve` (rol `REPORTS_CLIENT`; nunca AI) |
 | `GET /actuator/health` | público |
 
 Los `PATCH`, los `PUT` y las aprobaciones o desactivaciones exigen `If-Match` con el `ETag` recibido (`428` si falta, `412` si no coincide). Detalle completo de

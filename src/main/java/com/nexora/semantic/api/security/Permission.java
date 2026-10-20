@@ -43,6 +43,7 @@ public enum Permission {
         public static final String PROPOSAL_WRITE = "hasAuthority('" + Names.PROPOSAL_WRITE + "')";
         public static final String PROPOSAL_APPROVE = "hasAuthority('" + Names.PROPOSAL_APPROVE + "')";
         public static final String AUDIT_READ = "hasAuthority('" + Names.AUDIT_READ + "')";
+        public static final String RESOLVE = "hasAuthority('" + Names.RESOLVE + "')";
         public static final String PLATFORM_TENANT_MANAGE = "hasAuthority('" + Names.PLATFORM_TENANT_MANAGE + "')";
 
         private Require() {

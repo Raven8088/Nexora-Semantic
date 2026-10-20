@@ -183,7 +183,7 @@ public final class RelationshipDtos {
             UUID foreignKeyId,
             List<JoinType> allowedJoinTypes) {
 
-        static ContractResponse from(RelationshipContract c) {
+        public static ContractResponse from(RelationshipContract c) {
             return new ContractResponse(c.relationshipId(), c.version(), c.status(), c.usable(),
                     RelationshipDtos.issues(c.invalidReasons()), c.origin(), c.sourceObjectId(), c.targetObjectId(),
                     c.pairs().stream().map(p -> new ContractPair(p.sourceColumnId(), p.targetColumnId())).toList(),

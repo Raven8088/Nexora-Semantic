@@ -81,7 +81,7 @@ class ProductionProfileIntegrationTest {
     void flywayDoesNotRunDuringStartup() {
         assertThat(context.getBeanNamesForType(Flyway.class)).isEmpty();
         assertThat(context.getBeanNamesForType(FlywayMigrationInitializer.class)).isEmpty();
-        assertThat(historyRows()).isEqualTo(7); // V1..V7, all applied beforehand by the migration job
+        assertThat(historyRows()).isEqualTo(8); // V1..V8, all applied beforehand by the migration job
         assertThat(TestDatabases.asSuperuser(URL).sql("SELECT DISTINCT installed_by FROM flyway_schema_history")
                 .query(String.class).list()).containsExactly(TestDatabases.MIGRATOR);
     }
@@ -148,7 +148,7 @@ class ProductionProfileIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usable").value(true))
                 .andExpect(jsonPath("$.evidence.foreignKey").value("PRESENT"));
-        assertThat(historyRows()).isEqualTo(7);
+        assertThat(historyRows()).isEqualTo(8);
     }
 
     // --- The production profile refuses unsafe configurations at startup ---

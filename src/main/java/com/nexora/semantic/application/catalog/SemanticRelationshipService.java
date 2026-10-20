@@ -240,11 +240,35 @@ public class SemanticRelationshipService {
      */
     @Transactional(readOnly = true)
     public List<RelationshipContract> approvedContracts(CallerContext caller, DataSourceId dataSourceId) {
+        return approved(caller, dataSourceId).stream().map(EvaluatedRelationship::contract).toList();
+    }
+
+    /** Every APPROVED relationship of the data source, evaluated, with its referenced objects (S4.2 planning). */
+    @Transactional(readOnly = true)
+    public List<EvaluatedRelationship> approved(CallerContext caller, DataSourceId dataSourceId) {
         DataSource dataSource = dataSource(caller, dataSourceId);
         List<SemanticRelationship> approved = relationships.findByStatus(caller.tenantId(), dataSourceId,
                 DefinitionStatus.APPROVED);
         Map<UUID, PhysicalObject> loaded = load(dataSource, approved);
-        return approved.stream().map(r -> evaluate(dataSource, r, loaded).contract()).toList();
+        return approved.stream().map(r -> evaluate(dataSource, r, loaded)).toList();
+    }
+
+    /**
+     * Contracts of the given relationships that exist in the data source (any status), keyed by id; unknown ids,
+     * and ids of other tenants or data sources, are simply absent. Used by the semantic resolution (S4.1).
+     */
+    @Transactional(readOnly = true)
+    public Map<UUID, RelationshipContract> contracts(CallerContext caller, DataSourceId dataSourceId,
+                                                     Collection<UUID> ids) {
+        DataSource dataSource = dataSource(caller, dataSourceId);
+        List<SemanticRelationship> found = new ArrayList<>();
+        for (UUID id : new HashSet<>(ids)) {
+            relationships.findById(caller.tenantId(), dataSourceId, id).ifPresent(found::add);
+        }
+        Map<UUID, PhysicalObject> loaded = load(dataSource, found);
+        Map<UUID, RelationshipContract> contracts = new HashMap<>();
+        found.forEach(r -> contracts.put(r.id(), evaluate(dataSource, r, loaded).contract()));
+        return contracts;
     }
 
     /** On-demand suggestions; nothing is stored. */

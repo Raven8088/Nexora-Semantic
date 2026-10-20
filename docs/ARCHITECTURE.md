@@ -9,6 +9,8 @@
 | 1.4 | S2 Basic: importación persistente de metadatos de Discovery (V5, I7 resuelto, D16–D18) | 19 oct 2026 |
 | 1.5 | S3 Basic: catálogo semántico mínimo (V6, D14 resuelta, D19–D21) | 20 oct 2026 |
 | 1.6 | S3.1: catálogo de relaciones semánticas entre objetos físicos (V7, D22–D27) | 20 oct 2026 |
+| 1.7 | S4.1: resolución semántica tipada de solo lectura (sin migraciones, D28–D32) | 20 oct 2026 |
+| 1.8 | S4.2: planificación lógica segura y planes inmutables (V8, D33–D40) | 20 oct 2026 |
 
 Estado vivo del proyecto: [PROJECT_STATUS.md](PROJECT_STATUS.md) · Historial: [CHANGELOG.md](CHANGELOG.md).
 
@@ -358,7 +360,9 @@ En `PATCH`, un campo ausente no cambia; `description: ""` la elimina.
 | S3 Basic ✅ | Base `/data-sources/{id}/definitions`: `POST` (`semantic:proposal:write`) · `GET` `?kind&status` y `GET /{defId}` (`semantic:catalog:read`) · `PUT /{defId}` con `If-Match` (`proposal:write`) · `POST /{defId}/approve` con `If-Match` y `POST /{defId}/deactivate` `{reason}` con `If-Match` (`semantic:proposal:approve`). Códigos nuevos: 422 `definition_invalid` (`errors[{code, field, message}]`), 409 `invalid_state_transition`, 403 `self_approval_forbidden` / `non_human_approval_forbidden` |
 | S3.1 ✅ | Base `/data-sources/{id}/relationships`: `POST` (SEMANTIC) y `POST /from-foreign-key` (DECLARED_FK) (`semantic:proposal:write`) · `GET` `?status&origin&objectId` · `GET /{relId}` · `GET /{relId}/contract` (`semantic:catalog:read`) · `PUT /{relId}` con `If-Match` (solo `name`, `description`, `declaredCardinality`, `allowedJoinTypes`) · `POST /{relId}/approve` y `POST /{relId}/deactivate` con `If-Match` (`semantic:proposal:approve`) · `GET /data-sources/{id}/relationship-candidates?objectId&limit` (`semantic:catalog:read`). Códigos nuevos: 422 `relationship_invalid`, 409 `relationship_equivalent_exists` (con `existingRelationshipId`) |
 | S3 completo (pendiente) | `GET /definitions…` · `/versions` · `/dependents` · `GET /catalog/terms` · `POST /proposals` · `PUT /proposals/{id}/draft` · `POST /proposals/{id}/{validate,submit,approve,reject,request-changes,withdraw}` |
-| S4 | `POST /resolutions` (200 con RESOLVED/AMBIGUOUS/UNRESOLVABLE, persiste `semantic_plan`) · `GET /resolutions/{id}` · `POST /resolutions/{id}/replay` · `GET /catalog?asOfRevision` |
+| S4.1 ✅ | `POST /data-sources/{id}/semantic-resolutions` (`semantic:resolve`): 200 con la resolución tipada · 422 `semantic_resolution_failed` con `errors[{code, field, message, causes}]` · 404 fuente de otro tenant · 409 `data_source_archived` · 400 estructura inválida. No persiste nada (D28) |
+| S4.2 ✅ | `POST /data-sources/{id}/logical-plans` (201 + plan persistido · 422 `semantic_resolution_failed` o `logical_plan_rejected` · 409 fuente archivada) · `GET …/logical-plans/{planId}` (snapshot histórico) · `GET …/logical-plans/{planId}/validity` (vigencia derivada). Todos con `semantic:resolve` |
+| Posteriores (pendiente) | Traducción y ejecución del plan (Nexora Reports / motor de consultas), drill-across, preagregaciones, unidades |
 | S5 | `POST /data-sources/{id}/suggestion-runs` (202) · `GET /suggestion-runs/{id}` |
 
 ### 6.3 Códigos de error (`code`)
@@ -372,7 +376,7 @@ En `PATCH`, un campo ausente no cambia; `description: ""` la elimina.
 | 405 / 415 / 406 | `method_not_allowed` / `unsupported_media_type` / `not_acceptable` |
 | 409 | `duplicate_key`; (S3) `invalid_state_transition`, `stale_proposal`, `revision_mismatch`; (S3.1) `relationship_equivalent_exists` |
 | 412 / 428 | `precondition_failed` / `precondition_required` |
-| 413 / 422 | (S2) `payload_too_large` / `snapshot_mismatch`; (S3) `definition_invalid`; (S3.1) `relationship_invalid` |
+| 413 / 422 | (S2) `payload_too_large` / `snapshot_mismatch`; (S3) `definition_invalid`; (S3.1) `relationship_invalid`; (S4.1) `semantic_resolution_failed`; (S4.2) `logical_plan_rejected` |
 | 429 / 503 | (S5) `too_many_requests` / `ai_unavailable` |
 | 500 | `internal_error` |
 
@@ -381,6 +385,11 @@ Las respuestas incluyen `correlationId` y nunca trazas, SQL, valores enviados ni
 ---
 
 ## 7. Resolución semántica (S4)
+
+> **Estado (20 oct 2026):** S4.1 (resolución) y S4.2 (planificación lógica segura, §13) están implementadas con una política más conservadora que este boceto de S0: un solo objeto base, JOIN solo hacia PK, sin drill-across ni monedas. El resto de esta sección (grano declarado, `grainKey`, drill-across, monedas, `asOfRevision`, `replay`) **no está implementado**. Texto original:
+> S4.1 implementa la primera fase, la resolución tipada de definiciones, vinculaciones
+> físicas y filtros (§13, «S4.1»). Todo lo que sigue en esta sección sobre grafo, rutas, grano, fan-out, monedas,
+> ambigüedad de caminos y planes persistidos pertenece a **S4.2 y posteriores**, y **no está implementado**.
 
 Entrada: `SemanticRequest` estructurado (Intelligence traduce el lenguaje natural). Salida: plan lógico
 tipado; **Semantic no genera ni ejecuta SQL**.
@@ -645,6 +654,19 @@ detalle operativo está en el README.
 | D24 | **Equivalencia** = mismas columnas unidas, sin importar el orden de los pares ni la dirección (firma SHA-256 canónica). Nunca dos equivalentes APPROVED (índice único parcial en BD); la aplicación rechaza además un DRAFT equivalente a otro DRAFT/APPROVED, salvo que lo sustituya explícitamente | **Implementada** | Evita rutas ambiguas o duplicadas; la garantía no depende del código. Relaciones distintas entre las mismas tablas (p. ej. dos roles) siguen permitidas y su ambigüedad la resolverá S4. |
 | D25 | **Cardinalidad declarada ≠ evidencia**: la cardinalidad la declara una persona y no es garantía; la única evidencia de unicidad es que las columnas de un extremo coincidan **exactamente** con una PK conocida (Discovery no informa de UNIQUE); la evidencia de FK se guarda aparte; ambas se calculan contra los metadatos actuales en cada lectura | **Implementada** | `measurements.equipment_dbid = equipment.dbid` puede aprobarse, pero su contrato dice `targetUniqueness = UNKNOWN`, `cardinalityAssurance = DECLARED_ONLY` y riesgo de multiplicación `POSSIBLE`. Sin análisis de datos. |
 | D26 | Toda relación nueva empieza en **DRAFT**, también las creadas desde una FK; la FK se resuelve por clave natural exacta y, si no se puede (p. ej. esquema no importado), se rechaza con el motivo, sin inventar la referencia | **Implementada** | Mismas reglas de aprobación que S3 (D3/D19): aprueba un HUMAN distinto del autor y del último editor; nunca IA ni servicios. |
+| D28 | **S4.1 es una resolución de solo lectura**, no un plan: `POST /data-sources/{id}/semantic-resolutions` con el permiso existente `semantic:resolve` (rol `REPORTS_CLIENT`); 200 con la resolución o 422 `semantic_resolution_failed` con diagnósticos tipados; no persiste, no audita, no genera SQL ni elige rutas | **Implementada** | Cambia el boceto de S0 (`POST /resolutions` con 200 y estado UNRESOLVABLE): sin plan persistido no hay recurso que crear, y un 422 con `errors[]` es coherente con S3 y S3.1. AMBIGUOUS (rutas) pertenece a S4.2. No se amplían permisos: humanos sin `REPORTS_CLIENT` reciben 403 |
+| D29 | **Consistencia sin versiones históricas**: toda la resolución se lee en una transacción `readOnly` con aislamiento `REPEATABLE READ` (una única instantánea en PostgreSQL); el resultado captura `version` de cada definición, `version` de cada relación preferida, `fingerprint` y `lastSeenSnapshotId` de cada objeto físico, el último snapshot de metadatos y una huella SHA-256 global | **Implementada** (sin migración) | Evita mezclar estados concurrentes sin bloquear escrituras. Permite **detectar** cambios posteriores, no reproducir definiciones antiguas (R15 sigue abierto para S4.2) |
+| D30 | **Filtros tipados por el campo**: dimensión ⇒ `PRE_AGGREGATION` sobre su columna; métrica **solicitada** ⇒ `POST_AGGREGATION` sobre el valor agregado (solo `EQ`, `NE`, `GT`, `GTE`, `LT`, `LTE` numéricos); métrica no solicitada ⇒ `FILTER_STAGE_UNDETERMINED`. Operadores según `TypeCategory`: orden solo en numéricos y temporales (en texto depende de la intercalación), `IN` salvo en booleanos, nulos en cualquier dimensión | **Implementada** | Ningún valor se interpreta como expresión: los textos se guardan literalmente; fechas y horas en ISO-8601; `timestamptz` normalizado a UTC. Sin `LIKE`, rangos ni expresiones (no representables con seguridad en el catálogo actual) |
+| D31 | Distinguir «invalidada por importación» de «desactivada»: constante de dominio `SemanticDefinition.IMPORT_INVALIDATION_PREFIX`, que ya escribía `CatalogInvalidationService` | **Implementada** (sin migración) | Diagnósticos distintos (`DEFINITION_INVALIDATED` frente a `DEFINITION_NOT_APPROVED`) sin una columna nueva; si el formato del motivo cambiara, la definición seguiría bloqueada, solo cambiaría el código |
+| D32 | Una fuente **archivada** no se resuelve (409 `data_source_archived`) | **Implementada** | Coherente con las escrituras: una fuente archivada no debe alimentar informes nuevos |
+| D33 | **Grano de S4.2**: una fila del **objeto base** (tabla o vista del concepto de las métricas); todas las métricas deben compartirlo (`INCOMPATIBLE_GRAIN` si no). Sin drill-across ni preagregación | **Implementada** | Es el único grano que el catálogo permite conocer con certeza (S3 no tiene grano declarado ni filtros de concepto). Agregar un único objeto es correcto con o sin PK |
+| D34 | **JOIN solo hacia un lado único por PK exacta** en el sentido de navegación (`NONE_BY_PRIMARY_KEY` de S3.1). La cardinalidad declarada, una FK o un nombre nunca son prueba (`UNIQUENESS_NOT_PROVEN` / `FANOUT_RISK`); nunca `DISTINCT` | **Implementada** | Garantiza que ninguna fila agregada se multiplica. Caso `equipment.dbid`: aprobada pero rechazada para agregar |
+| D35 | **Ambigüedad**: se enumeran todas las rutas autorizadas (simples, ≤ 4 saltos, ≤ 16 rutas); si hay más de una, se rechaza aunque solo una sea segura. Las preferidas eligen solo si la ruta entera está formada por relaciones preferidas | **Implementada** | Dos rutas son dos significados (`dbid` frente a `id`); elegir «la segura» sería elegir semántica en silencio |
+| D36 | **Tipos de JOIN**: S3.1 autoriza de origen a destino. Navegación directa: LEFT si está autorizado (conserva todas las filas agregadas), si no INNER; inversa: solo INNER. INNER tras LEFT y filtros de filas sobre el lado opcional se rechazan | **Implementada** | Nunca se convierte un LEFT en INNER ni se invierte su significado. INNER registra `rowPreservation` (`UNMATCHED_ROWS_EXCLUDED` o `PRESERVED_BY_FOREIGN_KEY`) |
+| D37 | **Granularidad temporal explícita** (`timeGranularities`) en la petición del plan, única ampliación del contrato de S4.1 | **Implementada** | El catálogo define las granularidades permitidas, no cuál usar; no se supone ninguna |
+| D38 | **Planes inmutables autocontenidos** (V8): documento jsonb con copias de definiciones, relaciones, pares, evidencia y objetos físicos; dependencias tipadas con FK compuestas; ambas tablas append-only. La vigencia se **deriva** bajo demanda (`CURRENT` / `CURRENT_WITH_CHANGES` / `STALE`) sin modificar el plan | **Implementada** | Garantiza la reproducibilidad de la interpretación lógica; prepara la reejecución segura (comprobación de vigencia); no promete reproducir resultados (requeriría versionar datos empresariales) |
+| D39 | **Consistencia de la creación**: bloqueo `FOR UPDATE` de la fila de la fuente al inicio, como todos los escritores del catálogo y la importación; resolución S4.1 recalculada, planificación, instantánea e inserción en la misma transacción | **Implementada** | Ningún cambio del catálogo de esa fuente puede confirmarse durante la planificación; evita la carrera con invalidaciones. Lectura y vigencia: solo lectura (`REPEATABLE READ` para la vigencia) |
+| D40 | **Permisos**: crear, leer y comprobar planes exige el permiso existente `semantic:resolve` (`REPORTS_CLIENT`); crear un plan se audita (`LOGICAL_PLAN_CREATED`) sin valores de filtros | **Implementada** | Los planes son la entrada de Reports y pueden contener valores de filtros; no se amplía ningún rol ni se da aprobación a Reports |
 | D27 | **Pérdida de FK**: si desaparece (o cambia) la FK que respalda una relación DECLARED_FK aunque las columnas sigan, la relación APPROVED pasa a INACTIVE (`FOREIGN_KEY_LOST`) y no puede volver a aprobarse mientras falte; para seguir usándola, una persona crea una relación SEMANTIC equivalente con `replacesId` (flujo explícito) y otra la aprueba | **Implementada** | Ajuste del usuario: nunca convertir en silencio una relación respaldada en una relación declarada utilizable. El historial (DECLARED_FK, aprobación anterior, motivo) se conserva. |
 
 ---
@@ -670,6 +692,12 @@ detalle operativo está en el README.
 | R14 | El sobre de importación (`discovery-api/0.1`) es un contrato propuesto por Semantic que Discovery aún no conoce; un cambio en la respuesta de Discovery podría pasar inadvertido | Lectura tolerante + validación estructural + fixtures reales; versionar el sobre ante cambios incompatibles (D16) |
 | R17 | Una relación aprobada sin evidencia de unicidad (`DECLARED_ONLY`) puede multiplicar filas si la declaración es errónea (caso `equipment.dbid`) | El contrato de S4 expone `targetUniqueness`, `cardinalityAssurance` y `rowMultiplicationRisk`; S4 deberá tratar `POSSIBLE` como fan-out. `DISTINCT` no es un remedio |
 | R18 | Discovery no informa de restricciones UNIQUE ni índices únicos: claves de negocio realmente únicas aparecen como `UNKNOWN` | Documentado; ampliar el contrato de Discovery en el futuro. No se infiere unicidad de nombres ni de datos |
+| R20 | Sin versiones inmutables (D19), S4.1 detecta que algo cambió (huella, versiones) pero no puede recuperar el contenido aprobado anterior | Decidir en S4.2 cómo persistir el contenido de cada definición usada en el plan (R15) |
+| R21 | Solo `REPORTS_CLIENT` tiene `semantic:resolve`: personas y la IA no pueden resolver | Intencionado (sin ampliar permisos); Wellnode necesita un cliente de servicio con ese rol en Keycloak |
+| R22 | Un filtro `POST_AGGREGATION` y las métricas de conceptos distintos solo tienen sentido con un grano y rutas seguras, que S4.1 no comprueba | S4.2 debe validar grano y fan-out antes de construir el plan; S4.1 nunca afirma que la combinación sea segura |
+| R23 | La política de S4.2 rechaza casos legítimos (drill-across, rol múltiple de una misma tabla, JOIN a vistas sin PK, unicidad garantizada por UNIQUE no informado por Discovery) | Diagnósticos específicos; ampliar con estrategias demostrables (preagregación, UNIQUE en el contrato de Discovery) cuando se autorice |
+| R24 | Un INNER JOIN autorizado excluye filas sin coincidencia (salvo FK presente y columnas NOT NULL): el resultado es el que la relación aprobada define, pero puede sorprender | Explícito en el plan (`rowPreservation`); la persona aprobadora elige INNER o LEFT |
+| R25 | No hay metadatos de unidades ni monedas: el planificador no puede detectar métricas monetarias de monedas distintas | Documentado; `INCOMPATIBLE_UNITS` reservado; las métricas nunca se combinan aritméticamente |
 | R19 | Las sugerencias de candidatas son heurísticas (nombres, tipos, comentarios) y pueden proponer relaciones falsas | Se marcan como heurísticas con señales explicables, nunca se guardan y requieren DRAFT + aprobación humana |
 | R13 | Cambios silenciosos de configuración y serialización entre versiones mayores (encontrados en D10: claves `server.error.*` ignoradas y `type` de RFC 7807 omitido) | Verificar en cada actualización mayor con `spring-boot-properties-migrator` y pruebas de contrato de las respuestas (añadidas). |
 
@@ -931,6 +959,206 @@ La unicidad de un extremo no se presenta como cardinalidad completa. `DISTINCT` 
 - `TypeCategory` solo categoriza PostgreSQL.
 
 Criterios verificados: los 30 de la sección 14 de la especificación (ver PROJECT_STATUS y CHANGELOG §9).
+
+### S4.1 — Resolución semántica ✅ (20 oct 2026)
+
+Transforma una solicitud estructurada en una **resolución tipada, determinista y validada**, que S4.2 usará para
+construir los JOIN y el plan lógico. Es de solo lectura, sin migración, y no es un plan (D28).
+
+**Vinculación física disponible en S3 (sin cambios de modelo).** Métrica → concepto (APPROVED) → tabla o vista,
+más una columna opcional (COUNT sin columna). Dimensión → concepto → tabla o vista, más su columna. Con eso basta
+para llegar a objetos y columnas físicos; no se creó ninguna segunda representación del catálogo.
+
+**Contrato de entrada** (`POST /api/v1/data-sources/{id}/semantic-resolutions`, permiso `semantic:resolve`):
+
+```json
+{
+  "metrics": ["<id métrica>", "…"],
+  "dimensions": ["<id dimensión>"],
+  "filters": [
+    {"definitionId": "<id dimensión fecha>", "operator": "GTE", "value": "2026-01-01T00:00:00+01:00"},
+    {"definitionId": "<id dimensión nota>", "operator": "IN", "values": ["ok", "revisar"]},
+    {"definitionId": "<id métrica suma_valor>", "operator": "GT", "value": 100.5}
+  ],
+  "preferredRelationships": ["<id relación S3.1>"]
+}
+```
+
+- El tenant sale del token; la fuente, de la ruta.
+- Solo identificadores persistentes y valores escalares JSON: las propiedades desconocidas (`"sql"`, nombres de
+  tabla…), los operadores desconocidos (`LIKE`) y los valores objeto o lista se rechazan con 400.
+- Límites: 20 métricas, 20 dimensiones, 50 filtros, 100 valores por `IN`, 20 relaciones preferidas, textos de
+  hasta 1000 caracteres.
+
+**Reglas de validación** (`SemanticResolver`, dominio puro; las ejecuta `SemanticResolutionService`):
+- Cada métrica o dimensión debe existir en el tenant y la fuente, ser del tipo esperado y estar APPROVED.
+- Debe superar `DefinitionValidator.usageIssues`: objetos y columnas presentes, tipos compatibles, concepto APPROVED y válido.
+- Los filtros siguen D30. Un filtro sobre una dimensión no solicitada es válido (filtra filas) y su columna pasa a ser dependencia.
+- Las relaciones preferidas deben existir y ser `usable` según su contrato de S3.1. Se devuelven en el orden pedido y **nunca se seleccionan como ruta**.
+- Una métrica aprobada **no autoriza ningún JOIN**: métricas y dimensiones de conceptos distintos se resuelven por separado, sin afirmar que puedan unirse.
+
+**Diagnósticos** (422, `errors[{code, field, message, causes}]`; `field` es una ruta de la solicitud y nunca se
+repiten valores ni nombres):
+
+| Código | Cuándo |
+|---|---|
+| `NO_METRICS` | Lista de métricas vacía |
+| `DUPLICATE_REFERENCE` | Id repetido en métricas, dimensiones o relaciones; filtro o valor de `IN` repetido |
+| `METRIC_NOT_FOUND` / `DIMENSION_NOT_FOUND` | No existe en el tenant y la fuente, o es de otro tipo (sin revelar cuál) |
+| `DEFINITION_NOT_APPROVED` | DRAFT, o INACTIVE por desactivación |
+| `DEFINITION_INVALIDATED` | INACTIVE por una importación (D31); `causes` con los problemas actuales |
+| `CONCEPT_NOT_USABLE` / `PHYSICAL_BINDING_INVALID` | APPROVED, pero su concepto o su vinculación física ya no son válidos |
+| `FILTER_FIELD_NOT_FOUND` | El filtro no apunta a una dimensión o métrica de la fuente |
+| `FILTER_INVALID` | Número de valores incorrecto, `null`, tipo o formato incorrectos |
+| `OPERATOR_INCOMPATIBLE` | Operador no validable para el tipo (p. ej. `GT` en texto, `IN` en métrica) |
+| `FILTER_STAGE_UNDETERMINED` | Filtro sobre una métrica no solicitada |
+| `PREFERRED_RELATIONSHIP_NOT_FOUND` / `PREFERRED_RELATIONSHIP_NOT_USABLE` | Relación inexistente, o no APPROVED o físicamente inválida (`causes`) |
+
+Una fuente de otro tenant devuelve 404 y una fuente archivada, 409.
+
+**Contrato de salida** (`SemanticResolution`, inmutable):
+- `dataSourceId` y `metadataSnapshotId` (último import);
+- `metrics`, `dimensions` y `concepts`: id, clave, nombre, `version`, concepto, tabla, columna, agregación, tipo, `valueType`, granularidades y zona;
+- `filters`: definición, tipo, `stage`, operador, `valueType`, columna y valores canónicos;
+- `physicalDependencies`: id, tipo, clave natural, `fingerprint`, `lastSeenSnapshotId` y `dataType`, ordenadas por clave natural;
+- `preferredRelationships`: contratos de S3.1;
+- `fingerprint`: huella SHA-256 determinista de todo lo observado y de la solicitud normalizada.
+
+Sin SQL, JOIN, ruta ni plan (verificado en las pruebas).
+
+**Consistencia (D29).** Las lecturas se hacen en una sola transacción `REPEATABLE READ`. Dos resoluciones
+iguales sin cambios intermedios devuelven la misma respuesta y la misma huella. Revisar y reaprobar una
+definición cambia su `version` y la huella.
+
+**Límites de S4.1 (responsabilidades de S4.2):**
+- elegir rutas de JOIN y su orden, y resolver ambigüedades entre relaciones;
+- inferir o comprobar cardinalidades seguras, grano y fan-out;
+- decidir si una combinación de métricas y dimensiones es agregable;
+- construir y persistir el plan lógico y reproducirlo (`asOfRevision`, `replay`);
+- unidades y monedas (D13).
+
+**Ejemplo con el modelo de pruebas** (`SyntheticCatalog`):
+- conceptos `lecturas` (`plant.measurements`) y `equipos` (`plant.equipment`);
+- métricas `suma_valor` (SUM `value`) y `num_lecturas` (COUNT);
+- dimensiones `fecha` (TEMPORAL `measured_at`, `timestamptz`, UTC), `nota` y `nombre_equipo`.
+
+Con el cuerpo anterior:
+- la respuesta incluye los dos conceptos;
+- el filtro de fecha queda `PRE_AGGREGATION` con el valor `2025-12-31T23:00Z`;
+- el de `suma_valor` queda `POST_AGGREGATION`;
+- hay seis dependencias físicas.
+
+No se afirma que `measurements` y `equipment` puedan unirse: eso decidirá S4.2 con las relaciones de S3.1.
+
+### S4.2 — Planificación lógica segura ✅ (20 oct 2026)
+
+Recibe la misma solicitud que S4.1, más `timeGranularities` (D37). Reutiliza S4.1 recalculando la resolución
+(nunca una resolución antigua) y produce un **plan lógico tipado, determinista, seguro y persistido de forma
+inmutable**. No genera ni ejecuta SQL.
+
+**Comprobación previa.** El modelo actual permite un plan seguro dentro de una política conservadora: un único
+objeto base y JOIN solo hacia una PK exacta. No hay unidades ni monedas (R25) y la granularidad temporal no estaba
+en el contrato de S4.1, así que se añadió a la petición (D37). Ninguna limitación obligó a relajar validaciones.
+
+**Entrada** (`POST /api/v1/data-sources/{id}/logical-plans`, permiso `semantic:resolve`):
+
+```json
+{
+  "metrics": ["<suma_valor>"],
+  "dimensions": ["<fecha>", "<nombre_equipo>"],
+  "filters": [{"definitionId": "<nota>", "operator": "IN", "values": ["ok", "revisar"]},
+              {"definitionId": "<suma_valor>", "operator": "GT", "value": 100}],
+  "preferredRelationships": ["<measurements.equipment_dbid = equipment.id>"],
+  "timeGranularities": [{"dimensionId": "<fecha>", "granularity": "MONTH"}]
+}
+```
+
+**Resultados distinguidos:**
+
+| Respuesta | Cuándo |
+|---|---|
+| 201 | Plan persistido (`Location` + documento) |
+| 422 `semantic_resolution_failed` | Falla S4.1; mismos diagnósticos que S4.1 |
+| 422 `logical_plan_rejected` | Se resuelve, pero no se puede planificar de forma segura |
+| 404 | La fuente es de otro tenant |
+| 409 | La fuente está archivada |
+
+Diagnósticos del planificador:
+
+| Código | Significado |
+|---|---|
+| `NO_PATH` | Ninguna ruta de relaciones utilizables |
+| `AMBIGUOUS_PATH` | Varias rutas autorizadas; incluye `alternatives` (ids de relaciones de la propia fuente) |
+| `RELATIONSHIP_NOT_USABLE` | Solo conectan relaciones aprobadas físicamente inválidas |
+| `JOIN_NOT_AUTHORIZED` | LEFT invertido, o INNER después de LEFT |
+| `FANOUT_RISK` | El lado unido es «muchos» |
+| `UNIQUENESS_NOT_PROVEN` | Declarado «uno» sin PK |
+| `INCOMPATIBLE_GRAIN` | Métricas de objetos distintos |
+| `UNSAFE_FILTER` | Filtro de filas sobre el lado opcional de un LEFT |
+| `COMPLEXITY_LIMIT_EXCEEDED` | Se supera algún límite |
+| `GRANULARITY_REQUIRED` / `GRANULARITY_INVALID` | Falta la granularidad de una dimensión temporal, o no es válida |
+| `INCOMPATIBLE_UNITS` | Reservado; no se emite (R25) |
+
+**Modelo del plan** (`LogicalPlan`, formato `nexora-logical-plan/1`):
+- **Identidad:** `tenantId`, `dataSourceId`, `metadataSnapshotId`, `resolutionFingerprint` y la solicitud normalizada (`request`).
+- **Grano:** `base` (objeto base) e `inputGrain`, una fila por fila del objeto base con sus columnas de PK.
+- **Cálculo:**
+  - `outputGrain`: claves de agrupación con dimensión, objeto, columna, tipo, granularidad y zona;
+  - `joins`: orden, relación y versión, objetos origen y destino, `navigation` (`FORWARD` o `REVERSE`), `joinType`, condiciones con los pares exactos orientados, evidencia del lado unido, riesgo, `rowPreservation` y `optional`;
+  - `preAggregationFilters` y `postAggregationFilters`, con valores canónicos;
+  - `aggregations`;
+  - `operations`: `SCAN` → `JOIN`… → `FILTER_ROWS` → `GROUP_AND_AGGREGATE` → `FILTER_GROUPS`;
+  - `safety`: `SINGLE_OBJECT` o `JOINS_TO_PRIMARY_KEY_ONLY`.
+- **Copias autocontenidas:** `definitions`, `relationships` (con pares, claves naturales y evidencia) y `physicalObjects` (tipo, nulabilidad, `fingerprint` y snapshot).
+- **Huella:** `fingerprint` (SHA-256 del contenido).
+
+**Rutas (D35).**
+1. El grafo se construye con las relaciones APPROVED y `usable` de la fuente, recorribles en ambos sentidos.
+2. Para cada objeto requerido (dimensiones y columnas filtradas) se hace una búsqueda en profundidad acotada: 4 saltos, 16 rutas y 20 000 expansiones por objeto, 500 relaciones, 9 objetos y 8 JOIN.
+3. Las rutas elegidas se fusionan en un árbol con raíz en el objeto base. Si dos objetos requieren rutas distintas hacia un mismo objeto intermedio, el resultado es `AMBIGUOUS_PATH`.
+
+**Grano y fan-out (D33, D34).** Para cada JOIN, el riesgo de multiplicación se lee de la evidencia de S3.1 en la
+dirección de navegación. Solo se acepta `NONE_BY_PRIMARY_KEY`. `POSSIBLE` se rechaza siempre, diga lo que diga la
+cardinalidad declarada.
+
+**JOIN y filtros (D36).** Las reglas de tipo de JOIN están en D36. Los filtros sobre dimensiones se aplican antes de
+agregar y los de métricas solicitadas después, como en S4.1, sin desplazarlos de etapa.
+
+**Persistencia (V8, D38):**
+- `logical_plan`: tenant, fuente, formato, huellas, snapshot, `request` y `plan` en jsonb, `created_by`/`created_by_type` y `created_at`.
+- `logical_plan_dependency`: una fila por definición, relación (con `navigation`) y objeto físico, con la revisión, la huella y el tipo de dato.
+- Las FK compuestas impiden referencias entre tenants o fuentes. Hay triggers append-only; el rol de aplicación solo tiene SELECT e INSERT.
+- No se guardan datos empresariales ni credenciales.
+
+**Vigencia** (`GET …/validity`): compara las dependencias con el catálogo actual bajo el tenant autorizado:
+- fuente archivada;
+- definición revisada o no utilizable;
+- relación revisada, desactivada o invalidada (incluida la pérdida de FK);
+- PK que ya no respalda el JOIN;
+- objeto `MISSING`;
+- cambio de tipo incompatible;
+- cambios menores (no bloqueantes), como un comentario.
+
+El resultado es `CURRENT`, `CURRENT_WITH_CHANGES` o `STALE`. No reescribe el plan ni lo ejecuta.
+
+**Reproducibilidad.**
+1. **Interpretación lógica:** garantizada por el documento inmutable con copias.
+2. **Reejecución segura:** preparada mediante la vigencia.
+3. **Resultados:** no prometida, porque requiere versionar datos empresariales.
+
+**Ejemplo con el fixture sintético.** Se aprueban `measurements.equipment_dbid → equipment.dbid` y `→ equipment.id`.
+- `suma_valor` por `nombre_equipo` da `AMBIGUOUS_PATH` con las dos alternativas.
+- Si se prefiere `id`, se obtiene un plan con un JOIN `LEFT` `FORWARD` hacia la PK.
+- Si se prefiere `dbid`, se rechaza con `UNIQUENESS_NOT_PROVEN`.
+- `importe` por `titulo` (`finance.transactions` → `docs.documents`, compuesta y entre esquemas, solo INNER) produce un INNER JOIN con dos condiciones `company_code`/`company_code` y `document_number`/`number`.
+
+**Límites conocidos:**
+- sin drill-across, preagregación ni ramas de hechos múltiples;
+- sin el rol múltiple de una misma tabla;
+- vistas sin PK no unibles;
+- sin unidades;
+- la granularidad se aplica a la columna temporal en la zona de la dimensión, y su traducción es responsabilidad de Reports;
+- sin ejecución.
 
 ### S4 — Resolución semántica, reproducibilidad e impacto
 

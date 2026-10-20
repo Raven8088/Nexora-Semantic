@@ -1,6 +1,6 @@
 # Changelog — Nexora Semantic Engine
 
-Historial cronológico (de más antiguo a más reciente). Los bloques 1–7 se realizaron el **19 oct 2026** y los 8–9 el **20 oct 2026**, sobre
+Historial cronológico (de más antiguo a más reciente). Los bloques 1–7 se realizaron el **19 oct 2026** y los 8–11 el **20 oct 2026**, sobre
 la versión de artefacto `0.1.0-SNAPSHOT`. Los resultados de pruebas son los de `mvn clean verify` ejecutado al
 cerrar cada bloque. Estado actual: [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
@@ -311,3 +311,118 @@ aislamiento multi-tenant o la seguridad.
 | 28 | Idempotencia | Reimportación sin nuevas invalidaciones; FK repetida ⇒ 409 |
 | 29 | Migración nueva | `SchemaMigrationIntegrationTest` (7 migraciones, triggers de V7) y `SemanticRelationshipDatabaseIntegrationTest` |
 | 30 | Perfil `prod` | `ProductionProfileIntegrationTest.servesRequestsWithOnlyTheApplicationRole` |
+
+## 10. S4.1 — Resolución semántica (20 oct 2026)
+
+Punto de partida: 448 pruebas (S3.1). Antes de implementar se inspeccionaron los contratos reales. La vinculación
+física de S3 (métrica o dimensión → concepto → tabla y columna) basta para resolver hasta objetos y columnas
+físicos, así que no hizo falta ningún cambio de modelo ni ninguna migración. No se encontraron contradicciones
+estructurales con S1–S3.1.
+
+### Añadido
+- **Dominio `resolution`:**
+  - `ResolutionRequest`, `FilterOperator`, `FilterLiteral` y `FilterValue`;
+  - `SemanticResolver`, con las reglas puras de resolución;
+  - `SemanticResolution`, el resultado inmutable;
+  - `ResolutionOutcome` (`Resolved` / `Unresolvable`), `ResolutionDiagnostic` (14 códigos) y
+    `UnresolvableRequestException`.
+- **Aplicación:**
+  - `SemanticResolutionService` (transacción `readOnly` con aislamiento `REPEATABLE READ`);
+  - `SemanticRelationshipService.contracts(…)`, que reutiliza la evaluación de S3.1.
+- **API:** `POST /api/v1/data-sources/{id}/semantic-resolutions` (`SemanticResolutionController`,
+  `ResolutionDtos`), con el permiso existente `semantic:resolve` (`Permission.Require.RESOLVE`), y el código
+  `semantic_resolution_failed` (422) con `errors[{code, field, message, causes}]`.
+- **Decisiones D28–D32** y riesgos R20–R22 en `ARCHITECTURE.md`.
+
+### Cambiado (mínimo)
+- `SemanticDefinition.IMPORT_INVALIDATION_PREFIX`: el motivo de invalidación pasa a ser una constante de dominio,
+  que `CatalogInvalidationService` reutiliza; el valor no cambia.
+- `CatalogContextLoader` pasa a ser público, para que la resolución reutilice la carga del catálogo sin duplicarla.
+- `RelationshipDtos.ContractResponse.from` pasa a ser público, para devolver los contratos de S3.1.
+- No se modificó ninguna prueba existente ni ninguna migración (V1–V7), y no se amplió ningún permiso.
+
+### Verificación
+- `mvn clean verify` ⇒ **BUILD SUCCESS, 475 pruebas, 0 fallos, 0 errores, 0 omitidas** (27 nuevas: 14 unitarias
+  en `SemanticResolverTest` y 13 de integración con PostgreSQL en `SemanticResolutionApiIntegrationTest`).
+- Pruebas obligatorias:
+
+| # | Requisito | Pruebas |
+|---|---|---|
+| 1–4 | Una o varias métricas, con una o varias dimensiones | `resolvesOneApprovedMetric…`, `resolvesSeveralMetricsAndDimensions…`; API `resolvesMetricsDimensionsAndTypedFiltersWithoutSql` |
+| 5 | Filtro válido | `typesValidFiltersAndPlacesThemBeforeOrAfterAggregation`; API (fecha, `IN` y filtro posterior a la agregación) |
+| 6–8 | Tipo incompatible, operador incompatible, referencia no autorizada | `rejectsValuesOfTheWrongType`, `rejectsOperatorsThatCannotBeValidated…`, `filtersOnlyReferenceUsableFields…`; API `rejectsIncompatibleValuesOperatorsAndUnauthorizedFilterReferences` |
+| 9–10 | Métrica en DRAFT o INACTIVE | `rejectsDraftDeactivatedAndInvalidatedDefinitionsDistinctly`; API `draftAndDeactivatedDefinitionsAreNotResolved` |
+| 11 | Invalidada físicamente | API `aTypeChangeInvalidatesTheMetricAndItIsNotResolved` |
+| 12–13 | Objeto o columna desaparecidos | `approvedDefinitionsWithMissingObjectsOrColumnsAreNotUsable`; API `aMissingTableInvalidates…` y `aMissingColumnInvalidatesTheDimension` |
+| 14–15 | Tenant o fuente ajenos | `unknownWrongKindAndForeignIdsAreNotFoundWithoutDisclosure`; API `anotherTenantNeitherSeesTheDataSourceNorCanUseItsIds` y `definitionsAndRelationshipsOfAnotherDataSourceAreNotFound` |
+| 16–17 | Duplicados; solicitud sin métricas | `requiresMetricsAndRejectsDuplicates`; API `rejectsDuplicatesAndRequestsWithoutMetrics` |
+| 18–20 | Relación preferida utilizable, no utilizable, y dos ambiguas sin selección | `preferredRelationshipsAreValidatedButNeverSelected`; API `preferredRelationshipsAreValidatedAndEchoedButNeverChosen` |
+| 21 | Sin SQL | `theResultCarriesNoSqlJoinOrRoute`; API (nombres de campo y texto de la respuesta) |
+| 22 | Inmutable | `theResultIsImmutable` |
+| 23 | Consistencia y revisiones | `theFingerprintIsDeterministicAndCapturesEveryRevision`; API `capturesRevisionsSoThatLaterChangesAreDetectable` (incluye el aislamiento `REPEATABLE READ`) |
+| 24 | Autorización | API `onlyTheExistingResolvePermissionCanResolveAndResolvingChangesNothing` (incluye solo lectura: sin auditoría ni cambios de versión) |
+| 25 | PostgreSQL de pruebas | Toda `SemanticResolutionApiIntegrationTest` (Testcontainers 17.6, rol de aplicación) |
+| — | Adicional | API `anArchivedDataSourceIsNotResolved` (409) |
+
+## 11. S4.2 — Planificación lógica segura (20 oct 2026)
+
+Punto de partida: 475 pruebas (S4.1). En la inspección previa se comprobó que el modelo permite un plan seguro con
+una política conservadora: un único objeto base y JOIN solo hacia una PK exacta. También se detectaron dos
+carencias, ninguna de las cuales obligó a relajar validaciones:
+- S3 no tiene unidades ni monedas: no se atribuyen y `INCOMPATIBLE_UNITS` queda reservado;
+- el contrato de S4.1 no tenía granularidad temporal: se añade `timeGranularities` a la petición del plan.
+
+### Añadido
+- **Dominio `planning`:**
+  - `LogicalPlanner`, planificador puro: grano, rutas, ambigüedad, fan-out, tipos de JOIN, filtros y límites;
+  - `LogicalPlan`, el plan inmutable y autocontenido (formato `nexora-logical-plan/1`);
+  - `PlanRequest`, `PlanDiagnostic` (12 códigos), `PlanningOutcome` y `PlanRejectedException`;
+  - `PlanDependency`, `StoredPlan`, `PlanValidity` y `PlanValidityChecker`.
+- **Aplicación:**
+  - `LogicalPlanService`: crea planes bloqueando la fuente y recalculando S4.1, los consulta y comprueba su vigencia;
+  - `SemanticRelationshipService.approved(…)`, que reutiliza la evaluación de S3.1;
+  - el puerto `LogicalPlanRepository`.
+- **Persistencia:** migración **V8** `create_logical_plans` (`logical_plan` y `logical_plan_dependency`,
+  append-only, con FK compuestas) y `JdbcLogicalPlanRepository`.
+- **API:** `POST /api/v1/data-sources/{id}/logical-plans`, `GET …/{planId}` y `GET …/{planId}/validity`, con el
+  permiso existente `semantic:resolve`, y el código `logical_plan_rejected` (422) con
+  `errors[{code, field, message, relationshipIds, alternatives}]`.
+- **Auditoría:** `LOGICAL_PLAN_CREATED`, con destino `LOGICAL_PLAN`. Registra recuentos, huella y estrategia, nunca
+  valores de filtros.
+- **Decisiones D33–D40** y riesgos R23–R25 en `ARCHITECTURE.md`.
+
+### Cambiado (mínimo)
+- S4.1: `SemanticResolution.filterDimensions` (dimensiones usadas solo en filtros, con su versión e incluidas en la
+  huella), para que el plan copie y vigile también esas definiciones. Ninguna prueba de S4.1 tuvo que cambiar.
+- `ResolutionDtos.ResolutionRequestBody.toDomain` pasa a ser público, para reutilizar la validación de S4.1.
+- Pruebas de migración y del perfil `prod`: ahora esperan 8 migraciones y los 4 triggers nuevos. No se modificó
+  V1–V7 ni se eliminó o debilitó ninguna aserción.
+
+### Verificación
+- `mvn clean verify` ⇒ **BUILD SUCCESS, 510 pruebas, 0 fallos, 0 errores, 0 omitidas** (35 nuevas: 20 unitarias
+  en `LogicalPlannerTest` y 15 de integración con PostgreSQL en `LogicalPlanApiIntegrationTest`).
+- Pruebas obligatorias:
+
+| # | Requisito | Pruebas |
+|---|---|---|
+| 1–3 | Una métrica, métrica con dimensión, varias métricas | `plansOneMetricOnOneTableWithoutJoins`, `plansCompatibleMetricsWithDimensionsAndFilters…`; API `plansMetricsDimensionsAndFiltersOnOneTable…` |
+| 4–5 | Filtros previos y posteriores a la agregación | Mismas pruebas (`FILTER_ROWS` y `FILTER_GROUPS`) |
+| 6–7 | INNER y LEFT autorizados | `joinsToAPrimaryKeyWithAnAuthorizedInnerJoin`, `prefersAnAuthorizedLeftJoin…`; API `anInnerJoinOverACompositeCrossSchema…` y `anAuthorizedLeftJoinKeepsRows…` |
+| 8–10 | Compuesta, entre esquemas, columnas distintas de `id` | `joinsCompositeCrossSchemaPairsThatAreNotIdColumns`; API (`company_code`/`number`) |
+| 11 | Aprobada pero no utilizable | `approvedButUnusableRelationshipsAreNeverUsed` |
+| 12–13 | Relación de otro tenant u otra fuente | API `plansAndRelationshipsOfOtherTenantsAndDataSourcesAreNotVisible` |
+| 14–16 | Ambigüedad, selección explícita, ruta inexistente | `neverChoosesBetweenTwoRoutes…`, `reportsMissingRoutes`; API `twoApprovedRoutesAreAmbiguousUntilOneIsPreferred` |
+| 17–20 | Fan-out, unicidad desconocida, cardinalidad declarada sin evidencia, seguridad por PK | `joiningTowardsTheManySideIsFanOut`, `equipmentDbidIsApprovedButAggregatingAfterItIsNotProvenSafe`, `aDeclaredOneToOneWithoutEvidenceIsNotProof`; API (caso equipment y PK) |
+| 21 | Granos incompatibles | `metricsOverDifferentTablesHaveIncompatibleGrains`; API |
+| 22 | Filtro inseguro sobre LEFT | `aRowFilterOnTheOptionalSideOfALeftJoinIsUnsafe`; API |
+| 23 | Unidades incompatibles | No expresable: el catálogo no tiene unidades (documentado, código reservado) |
+| 24–25 | Persistencia inmutable y snapshot histórico | API `persistedPlansAreImmutableEvenForTheOwner`, `aRevisedDefinitionMakesThePlanStale…` (GET idéntico) |
+| 26–29 | Definición cambiada, relación desactivada, cambio físico, fuente archivada | API `aRevisedDefinition…`, `aDeactivatedRelationship…`, `anIncompatiblePhysicalChange…`, `anArchivedDataSource…` |
+| 30–32 | Entre tenants, entre fuentes, autorización | API `plansAndRelationshipsOfOther…`, `onlyTheResolvePermissionPlans…` |
+| 33 | Auditoría de creación | API `plansMetricsDimensionsAndFilters…` (sin valores de filtros) |
+| 34 | Huella determinista | `theFingerprintIsDeterministicAndContentSensitive`; API `identicalRequestsGiveIdenticalFingerprints…` |
+| 35 | Límites de complejidad | `boundsTheRouteSearch`, `boundsTheNumberOfObjects` |
+| 36 | Sin SQL | `thePlanIsImmutableSelfContainedAndHasNoSql`; API |
+| 37 | Integración real con S4.1 | API `semanticResolutionFailuresAreDistinctFromPlanningFailures` y todas las creaciones (S4.1 recalculado) |
+| 38 | `mvn clean verify` sin regresiones | 510/510 |
+| — | Adicionales | `temporalDimensionsNeedAnAllowedGranularity`, `neverReversesALeftJoin…`, `anInnerJoinAfterALeftJoinIsRejected` |

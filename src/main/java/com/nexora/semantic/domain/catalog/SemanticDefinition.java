@@ -49,6 +49,8 @@ public record SemanticDefinition(
     public static final int MAX_NAME_LENGTH = 200;
     public static final int MAX_DESCRIPTION_LENGTH = 2000;
     public static final int MAX_REASON_LENGTH = 500;
+    /** Prefix of the reason written when a metadata import invalidates an APPROVED definition (D21). */
+    public static final String IMPORT_INVALIDATION_PREFIX = "Invalidated by metadata import";
 
     public SemanticDefinition {
         Objects.requireNonNull(id, "id");

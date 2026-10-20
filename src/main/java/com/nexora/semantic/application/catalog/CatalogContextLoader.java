@@ -23,19 +23,20 @@ import java.util.UUID;
  * Loads, in a few queries, everything {@link DefinitionValidator} needs for a batch of specs: the referenced physical
  * objects and concepts, and the relations of those concepts. Lookups are scoped to the tenant and data source, so a
  * reference to another tenant's or data source's object is simply "not found".
+ * Shared by the catalog services and the semantic resolution (S4.1).
  */
-final class CatalogContextLoader {
+public final class CatalogContextLoader {
 
     private final PhysicalObjectRepository objects;
     private final SemanticDefinitionRepository definitions;
 
-    CatalogContextLoader(PhysicalObjectRepository objects, SemanticDefinitionRepository definitions) {
+    public CatalogContextLoader(PhysicalObjectRepository objects, SemanticDefinitionRepository definitions) {
         this.objects = objects;
         this.definitions = definitions;
     }
 
-    DefinitionValidator.Context load(TenantId tenantId, DataSourceId dataSourceId, EngineCode engine,
-                                     Collection<DefinitionSpec> specs, Collection<SemanticDefinition> known) {
+    public DefinitionValidator.Context load(TenantId tenantId, DataSourceId dataSourceId, EngineCode engine,
+                                            Collection<DefinitionSpec> specs, Collection<SemanticDefinition> known) {
         Map<UUID, SemanticDefinition> definitionsById = new HashMap<>();
         known.forEach(d -> definitionsById.put(d.id(), d));
         Set<UUID> conceptIds = new HashSet<>();

@@ -33,7 +33,7 @@ import java.util.UUID;
 @Transactional
 public class CatalogInvalidationService {
 
-    static final String REASON_PREFIX = "Invalidated by metadata import";
+    static final String REASON_PREFIX = SemanticDefinition.IMPORT_INVALIDATION_PREFIX;
 
     private final SemanticDefinitionRepository definitions;
     private final AuditLog auditLog;

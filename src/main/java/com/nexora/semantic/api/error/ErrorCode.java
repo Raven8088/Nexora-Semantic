@@ -29,6 +29,8 @@ public enum ErrorCode {
     SELF_APPROVAL_FORBIDDEN(HttpStatus.FORBIDDEN, "The author or last editor of a definition cannot approve it"),
     NON_HUMAN_APPROVAL_FORBIDDEN(HttpStatus.FORBIDDEN, "Only human principals can approve definitions"),
     RELATIONSHIP_INVALID(HttpStatus.UNPROCESSABLE_CONTENT, "Relationship is not valid"),
+    SEMANTIC_RESOLUTION_FAILED(HttpStatus.UNPROCESSABLE_CONTENT, "Semantic request cannot be resolved"),
+    LOGICAL_PLAN_REJECTED(HttpStatus.UNPROCESSABLE_CONTENT, "Request cannot be planned safely"),
     RELATIONSHIP_EQUIVALENT_EXISTS(HttpStatus.CONFLICT,
             "An equivalent relationship already exists; replace it explicitly instead"),
     INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "Unexpected error");

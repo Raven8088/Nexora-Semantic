@@ -6,8 +6,10 @@ import com.nexora.semantic.api.web.PreconditionRequiredException;
 import com.nexora.semantic.domain.catalog.ApprovalForbiddenException;
 import com.nexora.semantic.domain.catalog.InvalidDefinitionException;
 import com.nexora.semantic.domain.catalog.InvalidStateTransitionException;
+import com.nexora.semantic.domain.planning.PlanRejectedException;
 import com.nexora.semantic.domain.relationship.EquivalentRelationshipException;
 import com.nexora.semantic.domain.relationship.InvalidRelationshipException;
+import com.nexora.semantic.domain.resolution.UnresolvableRequestException;
 import com.nexora.semantic.domain.shared.DuplicateResourceException;
 import com.nexora.semantic.domain.shared.InvalidValueException;
 import com.nexora.semantic.domain.shared.ResourceNotFoundException;
@@ -134,6 +136,30 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         if (e.existingId() != null) {
             problem.setProperty("existingRelationshipId", e.existingId().toString());
         }
+        return respond(problem);
+    }
+
+    /** S4.1: typed diagnostics (code, request path, rule, underlying catalog issue codes); never values or names. */
+    @ExceptionHandler(UnresolvableRequestException.class)
+    ResponseEntity<ProblemDetail> unresolvable(UnresolvableRequestException e, HttpServletRequest request) {
+        ProblemDetail problem = Problems.of(ErrorCode.SEMANTIC_RESOLUTION_FAILED, request);
+        problem.setProperty("errors", e.diagnostics().stream()
+                .map(d -> Map.of("code", d.code().name(), "field", d.field(), "message", d.message(),
+                        "causes", d.causes()))
+                .toList());
+        return respond(problem);
+    }
+
+    /** S4.2: the request resolves but cannot be planned safely; ids are of the caller's tenant and source only. */
+    @ExceptionHandler(PlanRejectedException.class)
+    ResponseEntity<ProblemDetail> planRejected(PlanRejectedException e, HttpServletRequest request) {
+        ProblemDetail problem = Problems.of(ErrorCode.LOGICAL_PLAN_REJECTED, request);
+        problem.setProperty("errors", e.diagnostics().stream()
+                .map(d -> Map.of("code", d.code().name(), "field", d.field(), "message", d.message(),
+                        "relationshipIds", d.relationshipIds().stream().map(Object::toString).toList(),
+                        "alternatives", d.alternatives().stream()
+                                .map(route -> route.stream().map(Object::toString).toList()).toList()))
+                .toList());
         return respond(problem);
     }
 
