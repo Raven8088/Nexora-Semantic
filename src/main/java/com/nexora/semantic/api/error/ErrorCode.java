@@ -24,6 +24,13 @@ public enum ErrorCode {
     SNAPSHOT_MISMATCH(HttpStatus.UNPROCESSABLE_CONTENT, "Snapshot does not belong to this data source"),
     UNSUPPORTED_CONTRACT_VERSION(HttpStatus.BAD_REQUEST, "Unsupported import contract version"),
     DATA_SOURCE_ARCHIVED(HttpStatus.CONFLICT, "Data source is archived"),
+    DEFINITION_INVALID(HttpStatus.UNPROCESSABLE_CONTENT, "Definition is not valid"),
+    INVALID_STATE_TRANSITION(HttpStatus.CONFLICT, "Action not allowed in the current status"),
+    SELF_APPROVAL_FORBIDDEN(HttpStatus.FORBIDDEN, "The author or last editor of a definition cannot approve it"),
+    NON_HUMAN_APPROVAL_FORBIDDEN(HttpStatus.FORBIDDEN, "Only human principals can approve definitions"),
+    RELATIONSHIP_INVALID(HttpStatus.UNPROCESSABLE_CONTENT, "Relationship is not valid"),
+    RELATIONSHIP_EQUIVALENT_EXISTS(HttpStatus.CONFLICT,
+            "An equivalent relationship already exists; replace it explicitly instead"),
     INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "Unexpected error");
 
     private final HttpStatus status;

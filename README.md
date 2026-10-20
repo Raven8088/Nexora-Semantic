@@ -3,12 +3,18 @@
 Transforma los metadatos técnicos de **Nexora Discovery** en conocimiento empresarial validado, versionado y
 reutilizable por **Nexora Reports**. Arquitectura, decisiones y plan de etapas: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**Estado:** S1 completada y **S2 Basic** implementada, sobre Spring Boot 4.1.1 y Java 21.
+**Estado:** S1, S2 Basic y S3 Basic completadas; **S3.1** (relaciones semánticas) implementada, sobre Spring
+Boot 4.1.1 y Java 21.
 - **S1:** tenants, fuentes de datos, seguridad OAuth2/JWT por permisos, aislamiento multiempresa, auditoría
   append-only, errores RFC 7807 y migraciones de producción en un job independiente.
 - **S2 Basic:** importación persistente de los metadatos de Nexora Discovery (esquemas, tablas, vistas, columnas,
   PK y FK) con ids estables e historial.
-- **Pendiente:** catálogo semántico, propuestas, resolución e integración con IA.
+- **S3 Basic:** catálogo semántico mínimo (conceptos, métricas COUNT/SUM/AVG, dimensiones categóricas y
+  temporales) con aprobación humana e invalidación automática ante cambios de metadatos.
+- **S3.1:** catálogo de relaciones entre tablas o vistas (simples, compuestas, entre esquemas), creadas desde FK
+  o declaradas por personas, con evidencia física separada de la cardinalidad declarada, sugerencias
+  deterministas y un contrato tipado preparado para S4.
+- **Pendiente:** resolución semántica (S4: todavía no implementada), integración con IA (S5), consultas SQL y Excel.
 
 Estado detallado: [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) · Historial:
 [docs/CHANGELOG.md](docs/CHANGELOG.md).
@@ -167,6 +173,81 @@ curl -X POST -H "Authorization: Bearer $STEWARD_TOKEN" -H 'Content-Type: applica
   defecto o futuros) se ignoran.
 - **Límite de tamaño:** `nexora.semantic.discovery.max-import-bytes` (16 MiB por defecto).
 
+## Catálogo semántico (S3 Basic)
+
+Las definiciones se crean sobre los objetos importados de Discovery, usando sus `id` (`GET …/objects`):
+
+```bash
+# Concepto "Pedido" sobre la tabla sales.orders (usuario con rol EDITOR)
+curl -X POST -H "Authorization: Bearer $EDITOR_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"kind":"CONCEPT","key":"pedido","name":"Pedido","concept":{"relationId":"<id de sales.orders>"}}' \
+  http://localhost:8080/api/v1/data-sources/<id>/definitions
+# Aprobación por OTRA persona con rol APPROVER (If-Match = ETag recibido)
+curl -X POST -H "Authorization: Bearer $APPROVER_TOKEN" -H 'If-Match: "0"' \
+  http://localhost:8080/api/v1/data-sources/<id>/definitions/<definitionId>/approve
+```
+
+Una vez aprobado el concepto se pueden definir sus métricas y dimensiones, por ejemplo:
+- `{"kind":"METRIC","key":"ventas","name":"Ventas","metric":{"conceptId":"…","aggregation":"SUM","columnId":"<id de sales.orders.total>"}}`
+- `{"kind":"DIMENSION","key":"fecha","name":"Fecha de pedido","dimension":{"conceptId":"…","columnId":"<id de order_date>","type":"TEMPORAL"}}`
+
+Reglas:
+- **Agregaciones:** COUNT admite cualquier columna, o ninguna para contar filas; SUM y AVG, solo columnas
+  numéricas.
+- **Dimensiones:**
+  - TEMPORAL exige una columna `date` o `timestamp`;
+  - la zona (IANA, `UTC` por defecto) solo se aplica a `timestamptz`;
+  - las granularidades son DAY, WEEK, MONTH, QUARTER y YEAR.
+- **Aprobación y edición:**
+  - aprueba una persona (nunca IA ni un servicio) distinta del autor y del último editor; en Keycloak hacen falta
+    al menos dos usuarios;
+  - editar una definición la devuelve a DRAFT.
+- **Utilización:** solo son utilizables (`usable: true`) las definiciones APPROVED sin problemas (`issues`).
+- **Invalidación:** si una importación deja `MISSING` un objeto referenciado o cambia una columna a un tipo
+  incompatible, las definiciones aprobadas afectadas pasan a INACTIVE y no se reactivan solas: hay que revisarlas
+  y aprobarlas de nuevo.
+
+## Relaciones semánticas (S3.1)
+
+Una relación une dos tablas o vistas de la **misma fuente** mediante uno o varios pares ordenados de columnas
+(`origen.columna = destino.columna`), identificados por los `id` de `GET …/objects`. Las relaciones conectan
+objetos físicos, no conceptos: S4 las alcanzará a través de la tabla de cada concepto. No se presupone nada de los
+nombres, de las columnas `id` ni de PK o FK:
+
+```bash
+# measurements.equipment_dbid = equipment.dbid (dbid no es PK, UNIQUE ni FK; existe equipment.id)
+curl -X POST -H "Authorization: Bearer $EDITOR_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"Lecturas por equipo","sourceObjectId":"<id de plant.measurements>",
+       "targetObjectId":"<id de plant.equipment>",
+       "pairs":[{"sourceColumnId":"<id de equipment_dbid>","targetColumnId":"<id de equipment.dbid>"}],
+       "declaredCardinality":"MANY_TO_ONE","allowedJoinTypes":["INNER","LEFT"]}' \
+  http://localhost:8080/api/v1/data-sources/<id>/relationships
+# Desde una FK importada (se resuelve por clave natural exacta; si no se puede, 422 con el motivo)
+curl -X POST -H "Authorization: Bearer $EDITOR_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"foreignKeyId":"<id de la FK>","declaredCardinality":"MANY_TO_ONE","allowedJoinTypes":["INNER"]}' \
+  http://localhost:8080/api/v1/data-sources/<id>/relationships/from-foreign-key
+```
+
+Reglas:
+- **Todas nacen en DRAFT** (también las de FK) y las aprueba otra persona, igual que las definiciones; nunca IA
+  ni servicios.
+- **Pares inmutables:** solo se editan `name`, `description`, `declaredCardinality` y `allowedJoinTypes` (con
+  `If-Match`; vuelve a DRAFT). Para corregir pares se crea otra relación con `"replacesId":"<anterior>"`; al
+  aprobarla, la anterior pasa a INACTIVE en la misma transacción y se conserva como historial.
+- **Sin duplicados:** no puede haber dos relaciones equivalentes (mismas columnas, en cualquier orden o
+  dirección) en uso; la base de datos impide dos equivalentes aprobadas.
+- **Cardinalidad frente a evidencia:** `declaredCardinality` es una declaración humana. `evidence` informa por
+  separado de la unicidad de cada extremo (`PRIMARY_KEY` solo si las columnas son exactamente la PK; si no,
+  `UNKNOWN`), de la FK (`PRESENT`, `LOST`, `NOT_DECLARED`), de `cardinalityAssurance` y del riesgo de
+  multiplicación de filas. Discovery no informa de UNIQUE; no se analizan datos.
+- **Invalidación al importar:** objeto o columna `MISSING`, tipo incompatible o FK de respaldo perdida ⇒ la
+  relación aprobada pasa a INACTIVE, sin reactivación automática. Con la FK perdida no puede volver a aprobarse:
+  hay que crear una relación SEMANTIC equivalente con `replacesId`.
+- **Candidatas:** `GET …/relationship-candidates?objectId&limit` sugiere relaciones (FK, nombres, tipos,
+  comentarios) con señales explicables y una puntuación **heurística**; nunca se guardan ni son utilizables.
+- **Contrato para S4:** `GET …/relationships/{relId}/contract` (ids, pares, cardinalidad, evidencia, JOIN
+  autorizados, `usable`, motivos de invalidez y versión). No resuelve rutas ni genera SQL.
+
 ## API
 
 | Método y ruta | Permiso |
@@ -178,7 +259,13 @@ curl -X POST -H "Authorization: Bearer $STEWARD_TOKEN" -H 'Content-Type: applica
 | `POST /api/v1/data-sources/{id}/snapshots` | `semantic:source:manage` |
 | `GET /api/v1/data-sources/{id}/snapshots[/{snapshotId}]` | `semantic:catalog:read` |
 | `GET /api/v1/data-sources/{id}/objects?type&schema&status&parentId` · `GET …/objects/{objectId}` | `semantic:catalog:read` |
+| `POST /api/v1/data-sources/{id}/definitions` · `PUT …/definitions/{defId}` | `semantic:proposal:write` |
+| `GET /api/v1/data-sources/{id}/definitions?kind&status` · `GET …/definitions/{defId}` | `semantic:catalog:read` |
+| `POST …/definitions/{defId}/approve` · `POST …/definitions/{defId}/deactivate` | `semantic:proposal:approve` (solo HUMAN, distinto del autor) |
+| `POST /api/v1/data-sources/{id}/relationships` · `POST …/relationships/from-foreign-key` · `PUT …/relationships/{relId}` | `semantic:proposal:write` |
+| `GET …/relationships?status&origin&objectId` · `GET …/relationships/{relId}` · `GET …/relationships/{relId}/contract` · `GET /api/v1/data-sources/{id}/relationship-candidates` | `semantic:catalog:read` |
+| `POST …/relationships/{relId}/approve` · `POST …/relationships/{relId}/deactivate` | `semantic:proposal:approve` (solo HUMAN, distinto del autor y del último editor) |
 | `GET /actuator/health` | público |
 
-Los `PATCH` exigen `If-Match` con el `ETag` recibido (`428` si falta, `412` si no coincide). Detalle completo de
+Los `PATCH`, los `PUT` y las aprobaciones o desactivaciones exigen `If-Match` con el `ETag` recibido (`428` si falta, `412` si no coincide). Detalle completo de
 contratos y códigos de error en [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md).

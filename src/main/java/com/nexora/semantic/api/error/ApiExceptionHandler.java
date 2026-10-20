@@ -3,6 +3,11 @@ package com.nexora.semantic.api.error;
 import tools.jackson.databind.exc.UnrecognizedPropertyException;
 import com.nexora.semantic.api.web.PayloadTooLargeException;
 import com.nexora.semantic.api.web.PreconditionRequiredException;
+import com.nexora.semantic.domain.catalog.ApprovalForbiddenException;
+import com.nexora.semantic.domain.catalog.InvalidDefinitionException;
+import com.nexora.semantic.domain.catalog.InvalidStateTransitionException;
+import com.nexora.semantic.domain.relationship.EquivalentRelationshipException;
+import com.nexora.semantic.domain.relationship.InvalidRelationshipException;
 import com.nexora.semantic.domain.shared.DuplicateResourceException;
 import com.nexora.semantic.domain.shared.InvalidValueException;
 import com.nexora.semantic.domain.shared.ResourceNotFoundException;
@@ -102,6 +107,45 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         ProblemDetail problem = Problems.of(ErrorCode.SNAPSHOT_MISMATCH, request);
         problem.setProperty("errors", List.of(error(e.field(), "does not match the data source")));
         return respond(problem);
+    }
+
+    @ExceptionHandler(InvalidDefinitionException.class)
+    ResponseEntity<ProblemDetail> invalidDefinition(InvalidDefinitionException e, HttpServletRequest request) {
+        ProblemDetail problem = Problems.of(ErrorCode.DEFINITION_INVALID, request);
+        problem.setProperty("errors", e.issues().stream()
+                .map(issue -> Map.of("code", issue.code().name(), "field", issue.field(), "message", issue.message()))
+                .toList());
+        return respond(problem);
+    }
+
+    @ExceptionHandler(InvalidRelationshipException.class)
+    ResponseEntity<ProblemDetail> invalidRelationship(InvalidRelationshipException e, HttpServletRequest request) {
+        ProblemDetail problem = Problems.of(ErrorCode.RELATIONSHIP_INVALID, request);
+        problem.setProperty("errors", e.issues().stream()
+                .map(issue -> Map.of("code", issue.code().name(), "field", issue.field(), "message", issue.message()))
+                .toList());
+        return respond(problem);
+    }
+
+    @ExceptionHandler(EquivalentRelationshipException.class)
+    ResponseEntity<ProblemDetail> equivalentRelationship(EquivalentRelationshipException e,
+                                                         HttpServletRequest request) {
+        ProblemDetail problem = Problems.of(ErrorCode.RELATIONSHIP_EQUIVALENT_EXISTS, request);
+        if (e.existingId() != null) {
+            problem.setProperty("existingRelationshipId", e.existingId().toString());
+        }
+        return respond(problem);
+    }
+
+    @ExceptionHandler(InvalidStateTransitionException.class)
+    ResponseEntity<ProblemDetail> invalidTransition(HttpServletRequest request) {
+        return respond(Problems.of(ErrorCode.INVALID_STATE_TRANSITION, request));
+    }
+
+    @ExceptionHandler(ApprovalForbiddenException.class)
+    ResponseEntity<ProblemDetail> approvalForbidden(ApprovalForbiddenException e, HttpServletRequest request) {
+        return respond(Problems.of(e.reason() == ApprovalForbiddenException.Reason.NON_HUMAN
+                ? ErrorCode.NON_HUMAN_APPROVAL_FORBIDDEN : ErrorCode.SELF_APPROVAL_FORBIDDEN, request));
     }
 
     @ExceptionHandler(DataSourceArchivedException.class)

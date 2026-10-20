@@ -2,7 +2,15 @@ package com.nexora.semantic.infrastructure.config;
 
 import tools.jackson.databind.ObjectMapper;
 import com.nexora.semantic.application.audit.AuditQueryService;
+import com.nexora.semantic.application.catalog.CatalogInvalidationService;
+import com.nexora.semantic.application.catalog.RelationshipInvalidationService;
+import com.nexora.semantic.application.catalog.SemanticCatalogService;
+import com.nexora.semantic.application.catalog.SemanticRelationshipService;
 import com.nexora.semantic.application.port.AuditLog;
+import com.nexora.semantic.application.port.SemanticDefinitionRepository;
+import com.nexora.semantic.application.port.SemanticRelationshipRepository;
+import com.nexora.semantic.infrastructure.persistence.JdbcSemanticDefinitionRepository;
+import com.nexora.semantic.infrastructure.persistence.JdbcSemanticRelationshipRepository;
 import com.nexora.semantic.application.port.DataSourceRepository;
 import com.nexora.semantic.application.port.DiscoveredMetadataReader;
 import com.nexora.semantic.application.port.MetadataSnapshotRepository;
@@ -88,8 +96,53 @@ public class SemanticConfiguration {
     @Bean
     MetadataImportService metadataImportService(DataSourceRepository dataSources, DiscoveredMetadataReader reader,
                                                 MetadataSnapshotRepository snapshots, PhysicalObjectRepository objects,
-                                                AuditLog auditLog, Clock clock) {
-        return new MetadataImportService(dataSources, reader, snapshots, objects, auditLog, clock);
+                                                AuditLog auditLog, CatalogInvalidationService catalogInvalidation,
+                                                RelationshipInvalidationService relationshipInvalidation,
+                                                Clock clock) {
+        return new MetadataImportService(dataSources, reader, snapshots, objects, auditLog, catalogInvalidation,
+                relationshipInvalidation, clock);
+    }
+
+    // --- S3 Basic: semantic catalog ---
+
+    @Bean
+    SemanticDefinitionRepository semanticDefinitionRepository(JdbcClient jdbcClient, ObjectMapper objectMapper) {
+        return new JdbcSemanticDefinitionRepository(jdbcClient, objectMapper);
+    }
+
+    @Bean
+    SemanticCatalogService semanticCatalogService(DataSourceRepository dataSources,
+                                                  SemanticDefinitionRepository definitions,
+                                                  PhysicalObjectRepository objects, AuditLog auditLog, Clock clock) {
+        return new SemanticCatalogService(dataSources, definitions, objects, auditLog, clock);
+    }
+
+    @Bean
+    CatalogInvalidationService catalogInvalidationService(SemanticDefinitionRepository definitions,
+                                                          PhysicalObjectRepository objects, AuditLog auditLog) {
+        return new CatalogInvalidationService(definitions, objects, auditLog);
+    }
+
+    // --- S3.1: semantic relationships ---
+
+    @Bean
+    SemanticRelationshipRepository semanticRelationshipRepository(JdbcClient jdbcClient) {
+        return new JdbcSemanticRelationshipRepository(jdbcClient);
+    }
+
+    @Bean
+    SemanticRelationshipService semanticRelationshipService(DataSourceRepository dataSources,
+                                                            SemanticRelationshipRepository relationships,
+                                                            PhysicalObjectRepository objects, AuditLog auditLog,
+                                                            Clock clock) {
+        return new SemanticRelationshipService(dataSources, relationships, objects, auditLog, clock);
+    }
+
+    @Bean
+    RelationshipInvalidationService relationshipInvalidationService(SemanticRelationshipRepository relationships,
+                                                                    PhysicalObjectRepository objects,
+                                                                    AuditLog auditLog) {
+        return new RelationshipInvalidationService(relationships, objects, auditLog);
     }
 
     @Bean

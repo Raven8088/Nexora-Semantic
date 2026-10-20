@@ -40,6 +40,8 @@ public enum Permission {
     public static final class Require {
         public static final String CATALOG_READ = "hasAuthority('" + Names.CATALOG_READ + "')";
         public static final String SOURCE_MANAGE = "hasAuthority('" + Names.SOURCE_MANAGE + "')";
+        public static final String PROPOSAL_WRITE = "hasAuthority('" + Names.PROPOSAL_WRITE + "')";
+        public static final String PROPOSAL_APPROVE = "hasAuthority('" + Names.PROPOSAL_APPROVE + "')";
         public static final String AUDIT_READ = "hasAuthority('" + Names.AUDIT_READ + "')";
         public static final String PLATFORM_TENANT_MANAGE = "hasAuthority('" + Names.PLATFORM_TENANT_MANAGE + "')";
 

@@ -1,6 +1,6 @@
 # Changelog — Nexora Semantic Engine
 
-Historial cronológico (de más antiguo a más reciente). Todos los bloques se realizaron el **19 oct 2026** sobre
+Historial cronológico (de más antiguo a más reciente). Los bloques 1–7 se realizaron el **19 oct 2026** y los 8–9 el **20 oct 2026**, sobre
 la versión de artefacto `0.1.0-SNAPSHOT`. Los resultados de pruebas son los de `mvn clean verify` ejecutado al
 cerrar cada bloque. Estado actual: [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
@@ -180,3 +180,134 @@ Precedido de la aceptación de S1. Discovery se consultó en modo de solo lectur
   - inmutabilidad, append-only y FK compuestas en PostgreSQL;
   - el rol de aplicación sigue siendo de mínimo privilegio.
 - La V5 se aplica igual con Flyway al arrancar y con el job independiente.
+
+## 8. S3 Basic — Catálogo semántico mínimo (20 oct 2026)
+
+Precedido de la aceptación de S2 Basic. Antes de implementar se documentaron dos contradicciones con S0:
+- el modelo de propuestas y versiones frente al ciclo mínimo pedido (decisión **D19**);
+- la separación autor/aprobador de D3, que se mantiene.
+
+### Añadido
+- **Dominio `catalog`:**
+  - `SemanticDefinition`, con ciclo DRAFT → APPROVED → INACTIVE e invariantes de aprobación;
+  - especificaciones tipadas `DefinitionSpec` (Concept, Metric, Dimension);
+  - `Aggregation` (COUNT, SUM, AVG), `DimensionType`, `TimeGranularity`;
+  - `TypeCategory`, que asigna categorías a los tipos PostgreSQL de Discovery;
+  - `DefinitionValidator` (referencias, `MISSING`, compatibilidad de tipos, concepto aprobado);
+  - `DefinitionKey` y excepciones.
+- **Aplicación:**
+  - `SemanticCatalogService`: crear, revisar, aprobar, desactivar y consultar, con `usable` e `issues`;
+  - `CatalogInvalidationService`, que se ejecuta dentro de la importación de S2 (**D21**);
+  - el puerto `SemanticDefinitionRepository` y `PhysicalObjectRepository.findByIds`.
+- **Persistencia:** migración **V6** `create_semantic_catalog` y `JdbcSemanticDefinitionRepository`.
+  Las referencias se guardan en columnas tipadas con FK compuestas (**D20**).
+- **API** (`/api/v1/data-sources/{id}/definitions`):
+  - `POST`, `GET` (con `?kind&status`), `GET /{id}` y `PUT /{id}`;
+  - `POST /{id}/approve` y `POST /{id}/deactivate`;
+  - nuevos códigos `definition_invalid` (422), `invalid_state_transition` (409), `self_approval_forbidden` y
+    `non_human_approval_forbidden` (403).
+- **Auditoría:** `DEFINITION_CREATED`, `_UPDATED`, `_APPROVED`, `_DEACTIVATED` e `_INVALIDATED`; la auditoría
+  de cada importación incluye `invalidatedDefinitions`.
+- **D14 resuelta (mínima):** zona IANA solo en dimensiones temporales sobre `timestamptz` (`UTC` por defecto).
+
+### Cambiado
+- `MetadataImportService` invoca la invalidación del catálogo en la misma transacción.
+- Pruebas de migración y del perfil `prod`: ahora esperan 6 migraciones y el trigger nuevo; la prueba del
+  perfil `prod` también importa y aprueba un concepto con solo el rol de aplicación.
+
+### Verificación
+- **394 pruebas, 0 fallos** (51 nuevas). Sobre metadatos reales de Discovery:
+  - creación y aprobación de conceptos, métricas y dimensiones;
+  - referencias inválidas, de otra fuente o de otro tenant ⇒ 422, y prohibidas por FK en la base de datos;
+  - incompatibilidades de tipo ⇒ 422;
+  - vista eliminada ⇒ definiciones `INACTIVE`, que siguen inactivas al restaurar la vista hasta revisarlas;
+  - cambio de `numeric` a `text` ⇒ métrica `INACTIVE`;
+  - autoaprobación, IA o servicio como aprobador ⇒ 403;
+  - aislamiento entre tenants, auditoría, rollback si falla la auditoría;
+  - inmutabilidad y checks en PostgreSQL;
+  - perfil `prod`.
+
+## 9. S3.1 — Catálogo de relaciones semánticas (20 oct 2026)
+
+Precedido de la aceptación de S3 Basic. La especificación se recibió en dos partes (la primera, cortada); el
+análisis previo se aceptó con un cambio del usuario: la pérdida de la FK que respalda una relación la bloquea y
+exige una nueva aprobación (**D27**). No se encontraron contradicciones que comprometan la integridad, el
+aislamiento multi-tenant o la seguridad.
+
+### Añadido
+- **Dominio `relationship`:**
+  - `SemanticRelationship` (pares inmutables, ciclo D19, `replacesId`);
+  - `ColumnPair`, `RelationshipOrigin`, `DeclaredCardinality`, `JoinType`;
+  - `RelationshipValidator` (validación física y evidencia);
+  - `RelationshipEvidence`, `UniquenessEvidence`, `ForeignKeyEvidence`, `CardinalityAssurance` y
+    `RowMultiplicationRisk`;
+  - `RelationshipSignature` (equivalencia sin orden ni dirección);
+  - `ForeignKeyResolver` (clave natural exacta);
+  - `RelationshipCandidateFinder` y `RelationshipCandidate`;
+  - `RelationshipContract` (contrato para S4);
+  - excepciones `InvalidRelationshipException` (422) y `EquivalentRelationshipException` (409).
+- **Dominio `catalog`:**
+  - `ApprovalRules`: regla D3 extraída de `SemanticDefinition` y compartida, sin cambio de comportamiento;
+  - nuevos códigos de `DefinitionIssue`: `COLUMN_NOT_IN_RELATION`, `INCOMPATIBLE_TYPES`, `DUPLICATE_PAIR`,
+    `CONTRADICTORY_PAIR`, `FOREIGN_KEY_LOST`, `REFERENCE_UNRESOLVABLE` y `REPLACEMENT_INVALID`.
+- **Aplicación:**
+  - `SemanticRelationshipService`: crear SEMANTIC, crear desde FK, editar, aprobar con sustitución controlada,
+    desactivar, consultar, candidatas y `approvedContracts`;
+  - `RelationshipInvalidationService`, invocado por la importación de S2 en la misma transacción;
+  - el puerto `SemanticRelationshipRepository` y `PhysicalObjectRepository.findByNaturalKeys`.
+- **Persistencia:** migración **V7** `create_semantic_relationships` (`semantic_relationship` y
+  `semantic_relationship_pair`) y `JdbcSemanticRelationshipRepository`.
+- **API:**
+  - `/api/v1/data-sources/{id}/relationships`: `POST`, `POST /from-foreign-key`, `GET` (con
+    `?status&origin&objectId`), `GET /{rid}`, `GET /{rid}/contract`, `PUT /{rid}`, `POST /{rid}/approve` y
+    `POST /{rid}/deactivate`;
+  - `GET /api/v1/data-sources/{id}/relationship-candidates`;
+  - nuevos códigos `relationship_invalid` (422) y `relationship_equivalent_exists` (409).
+- **Auditoría:** `RELATIONSHIP_CREATED`, `_UPDATED`, `_APPROVED`, `_DEACTIVATED`, `_INVALIDATED` y `_REPLACED`,
+  con el tipo de destino `SEMANTIC_RELATIONSHIP` (el CHECK de V3 usa un patrón, así que no hace falta
+  migración); la auditoría de cada importación incluye `invalidatedRelationships`.
+- **Pruebas:** utilidad `SyntheticCatalog`, un payload sintético con la forma de Discovery para los ejemplos que
+  la base ERP real no contiene.
+- **Decisiones D22–D27** y riesgos R17–R19 en `ARCHITECTURE.md`.
+
+### Cambiado
+- `MetadataImportService` recibe además `RelationshipInvalidationService`.
+- `SemanticDefinition.approve` delega en `ApprovalRules`.
+- Pruebas de migración y del perfil `prod`: ahora esperan 7 migraciones y los 3 triggers nuevos. La prueba del
+  perfil `prod` también crea, aprueba y consulta el contrato de una relación desde FK. No se eliminó ni se
+  debilitó ninguna prueba.
+
+### Verificación
+- `mvn clean verify` ⇒ **BUILD SUCCESS, 448 pruebas, 0 fallos, 0 errores, 0 omitidas** (54 nuevas).
+- Cobertura de las 30 pruebas obligatorias (sección 14):
+
+| # | Requisito | Pruebas |
+|---|---|---|
+| 1 | Relación desde FK | API `createsADraftFromACompositeCrossSchemaForeignKeyWithItsEvidence`; `RelationshipCandidateFinderTest.foreignKeysResolveByExactNaturalKey…`; perfil `prod` |
+| 2 | Sin FK | API `relatesColumnsWithDifferentNamesWithoutAnyForeignKey` |
+| 3 | Caso equipment | API `equipmentDbidIsApprovableButItsUniquenessIsNeverPresentedAsGuaranteed`; `RelationshipValidatorTest.equipmentDbid…` |
+| 4 | Nombres distintos | API `relatesColumnsWithDifferentNamesWithoutAnyForeignKey` (`client_code = account_number`) |
+| 5 | Compuesta | API `compositeCrossSchemaRelationshipIsBackedByTheExactTargetPrimaryKey` |
+| 6 | Entre esquemas | Misma prueba (`finance` → `docs`) y FK real `sales.order_lines` → `inventory.stock` |
+| 7 | Columnas inexistentes | API `rejectsUnknownColumnsColumnsOfOtherTablesAndIncompatibleTypes`; `RelationshipValidatorTest.columnsMustExist…` |
+| 8 | Tipos incompatibles | Misma prueba de API; `incompatibleTypesAreRejected`; `neverSuggestsBetweenIncompatibleTypes` |
+| 9 | Duplicadas o ambiguas | API `rejectsRepeatedPairsAndEquivalentRelationshipsInAnyDirection`; `repeatedOrContradictoryPairsAreRejected`; BD `twoEquivalentRelationshipsCanNeverBeApprovedAtTheSameTime` |
+| 10–11 | Aislamiento entre tenants y fuentes | API `isolatesTenantsAndDataSources`; BD `relationshipsAndPairsCannotReferenceObjectsOfAnotherTenantOrDataSource`; `objectsOfAnotherTenantOrDataSourceAreNotFound` |
+| 12 | Candidatas no aprobadas | API `candidatesAreExplainableSuggestionsThatAreNeverStored`; `RelationshipCandidateFinderTest` |
+| 13 | Cardinalidad declarada sin evidencia | `declaredCardinalityWithoutEvidenceIsReportedAsDeclaredOnly`; API (`DECLARED_ONLY`) |
+| 14 | Unicidad por PK | `uniquenessEvidenceRequiresAnExactPrimaryKeyMatch`; API compuesta (`PRIMARY_KEY`) |
+| 15 | Sin UNIQUE | Caso equipment (`targetUniqueness = UNKNOWN`) |
+| 16–17 | Aprobador distinto; rechazo de IA y servicio | API `approverMustBeAnotherHumanAndNeverAServiceOrAnAi`; `SemanticRelationshipTest.approverMustBeAHuman…` |
+| 18 | Rechazo de uso de DRAFT o INACTIVE | API `draftAndInactiveRelationshipsAreNeverUsable` |
+| 19 | Invalidación por MISSING | API `aMissingTableInvalidatesAndRestoringItDoesNotReactivate` |
+| 20 | Columna desaparecida | API `aMissingColumnInvalidates` |
+| 21 | Cambio de tipo | API `anIncompatibleTypeChangeInvalidatesAndAReimportIsIdempotent`; `retypedColumnInvalidates` |
+| 22 | Pérdida de FK | API `aLostForeignKeyBlocksUseKeepsHistoryAndRequiresAnExplicitSemanticReplacement` |
+| 23 | Sin reactivación | API `aMissingTable…RestoringItDoesNotReactivate`; `lifecycleTransitionsFollowD19` |
+| 24 | `If-Match` | API `writesRequireAMatchingIfMatch` |
+| 25 | Auditoría | API `everyChangeIsAudited` y comprobaciones de `RELATIONSHIP_INVALIDATED` y `_REPLACED` |
+| 26 | Inmutabilidad de pares | API `editingDescriptiveFieldsReturnsToDraftAndPairsAreImmutable`; BD `pairsAreAppendOnlyForEveryRole`, `applicationRoleCannotChangeImmutableColumns` (7 casos), `evenTheOwnerCannotChangeEndpoints…`; `pairsCannotBeChangedThroughTheModel` |
+| 27 | Sustitución con historial | API `controlledReplacementNeverLeavesTwoApprovedAndKeepsHistory`; flujo de pérdida de FK |
+| 28 | Idempotencia | Reimportación sin nuevas invalidaciones; FK repetida ⇒ 409 |
+| 29 | Migración nueva | `SchemaMigrationIntegrationTest` (7 migraciones, triggers de V7) y `SemanticRelationshipDatabaseIntegrationTest` |
+| 30 | Perfil `prod` | `ProductionProfileIntegrationTest.servesRequestsWithOnlyTheApplicationRole` |

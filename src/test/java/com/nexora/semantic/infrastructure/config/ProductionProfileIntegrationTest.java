@@ -4,6 +4,7 @@ import tools.jackson.databind.ObjectMapper;
 import com.nexora.semantic.NexoraSemanticApplication;
 import com.nexora.semantic.infrastructure.migration.SchemaMigrator;
 import com.nexora.semantic.infrastructure.persistence.LeastPrivilegeVerifier;
+import com.nexora.semantic.support.DiscoveryFixtures;
 import com.nexora.semantic.support.TestDatabases;
 import com.nexora.semantic.support.TestJwt;
 import com.nexora.semantic.support.TestOidcProvider;
@@ -23,12 +24,15 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -77,7 +81,7 @@ class ProductionProfileIntegrationTest {
     void flywayDoesNotRunDuringStartup() {
         assertThat(context.getBeanNamesForType(Flyway.class)).isEmpty();
         assertThat(context.getBeanNamesForType(FlywayMigrationInitializer.class)).isEmpty();
-        assertThat(historyRows()).isEqualTo(5); // V1..V5, all applied beforehand by the migration job
+        assertThat(historyRows()).isEqualTo(7); // V1..V7, all applied beforehand by the migration job
         assertThat(TestDatabases.asSuperuser(URL).sql("SELECT DISTINCT installed_by FROM flyway_schema_history")
                 .query(String.class).list()).containsExactly(TestDatabases.MIGRATOR);
     }
@@ -99,14 +103,52 @@ class ProductionProfileIntegrationTest {
         String tenantId = objectMapper.readTree(created).get("id").asString();
         String steward = TestJwt.principal("HUMAN", tenantId, "STEWARD").bearer();
 
-        mvc.perform(post("/api/v1/data-sources").header(HttpHeaders.AUTHORIZATION, steward)
-                        .contentType(MediaType.APPLICATION_JSON)
+        String dataSource = objectMapper.readTree(mvc.perform(post("/api/v1/data-sources")
+                        .header(HttpHeaders.AUTHORIZATION, steward).contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(
                                 Map.of("key", "erp", "name", "ERP", "engine", "postgresql", "databaseName", "erp"))))
-                .andExpect(status().isCreated());
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("id").asString();
         mvc.perform(get("/api/v1/data-sources").header(HttpHeaders.AUTHORIZATION, steward))
                 .andExpect(status().isOk());
-        assertThat(historyRows()).isEqualTo(5);
+
+        // S2 + S3 with only the application role: import real Discovery metadata, define and approve a concept.
+        mvc.perform(post("/api/v1/data-sources/" + dataSource + "/snapshots").header(HttpHeaders.AUTHORIZATION, steward)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(DiscoveryFixtures.envelope(DiscoveryFixtures.ALL_SCHEMAS)))
+                .andExpect(status().isCreated());
+        String orders = jdbc.sql("SELECT id FROM physical_object WHERE natural_key = :k")
+                .param("k", "\"sales\".\"orders\"").query(UUID.class).single().toString();
+        String concept = objectMapper.readTree(mvc.perform(post("/api/v1/data-sources/" + dataSource + "/definitions")
+                        .header(HttpHeaders.AUTHORIZATION, TestJwt.principal("HUMAN", tenantId, "EDITOR").bearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("kind", "CONCEPT", "key", "pedido",
+                                "name", "Pedido", "concept", Map.of("relationId", orders)))))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("id").asString();
+        mvc.perform(post("/api/v1/data-sources/" + dataSource + "/definitions/" + concept + "/approve")
+                        .header(HttpHeaders.AUTHORIZATION, TestJwt.principal("HUMAN", tenantId, "APPROVER").bearer())
+                        .header(HttpHeaders.IF_MATCH, "\"0\""))
+                .andExpect(status().isOk());
+
+        // S3.1 with only the application role: a relationship from a real foreign key, approved and usable.
+        String foreignKey = jdbc.sql("SELECT id FROM physical_object WHERE natural_key = :k")
+                .param("k", "\"sales\".\"orders\"#\"orders_customer_fk\"").query(UUID.class).single().toString();
+        String relationship = objectMapper.readTree(mvc.perform(post("/api/v1/data-sources/" + dataSource
+                                + "/relationships/from-foreign-key")
+                        .header(HttpHeaders.AUTHORIZATION, TestJwt.principal("HUMAN", tenantId, "EDITOR").bearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("foreignKeyId", foreignKey,
+                                "declaredCardinality", "MANY_TO_ONE", "allowedJoinTypes", List.of("INNER")))))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("id").asString();
+        mvc.perform(post("/api/v1/data-sources/" + dataSource + "/relationships/" + relationship + "/approve")
+                        .header(HttpHeaders.AUTHORIZATION, TestJwt.principal("HUMAN", tenantId, "APPROVER").bearer())
+                        .header(HttpHeaders.IF_MATCH, "\"0\""))
+                .andExpect(status().isOk());
+        mvc.perform(get("/api/v1/data-sources/" + dataSource + "/relationships/" + relationship + "/contract")
+                        .header(HttpHeaders.AUTHORIZATION, steward))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.usable").value(true))
+                .andExpect(jsonPath("$.evidence.foreignKey").value("PRESENT"));
+        assertThat(historyRows()).isEqualTo(7);
     }
 
     // --- The production profile refuses unsafe configurations at startup ---

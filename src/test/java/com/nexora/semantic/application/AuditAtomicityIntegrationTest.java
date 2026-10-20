@@ -119,6 +119,37 @@ class AuditAtomicityIntegrationTest extends IntegrationTest {
     }
 
     @Test
+    void definitionApprovalIsRolledBackWhenAuditFails() throws Exception {
+        JsonNode source = body(mvc.perform(post("/api/v1/data-sources").header(HttpHeaders.AUTHORIZATION, steward)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("key", "erp", "name", "ERP", "engine", "postgresql", "databaseName", "erp"))))
+                .andExpect(status().isCreated()).andReturn());
+        String dataSourceId = source.get("id").asString();
+        mvc.perform(post("/api/v1/data-sources/" + dataSourceId + "/snapshots").header(HttpHeaders.AUTHORIZATION, steward)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(DiscoveryFixtures.envelope(DiscoveryFixtures.ALL_SCHEMAS)))
+                .andExpect(status().isCreated());
+        UUID orders = appJdbc.sql("SELECT id FROM physical_object WHERE data_source_id = :d AND natural_key = :k")
+                .param("d", UUID.fromString(dataSourceId)).param("k", "\"sales\".\"orders\"").query(UUID.class).single();
+        JsonNode concept = body(mvc.perform(post("/api/v1/data-sources/" + dataSourceId + "/definitions")
+                        .header(HttpHeaders.AUTHORIZATION, TestJwt.human(tenant, "EDITOR").bearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("kind", "CONCEPT", "key", "pedido", "name", "Pedido",
+                                "concept", Map.of("relationId", orders.toString())))))
+                .andExpect(status().isCreated()).andReturn());
+        failAuditing();
+
+        mvc.perform(post("/api/v1/data-sources/" + dataSourceId + "/definitions/" + concept.get("id").asString()
+                        + "/approve").header(HttpHeaders.AUTHORIZATION, TestJwt.human(tenant, "APPROVER").bearer())
+                        .header(HttpHeaders.IF_MATCH, "\"0\""))
+                .andExpect(status().isInternalServerError());
+
+        assertThat(appJdbc.sql("SELECT status FROM semantic_definition WHERE id = :id")
+                .param("id", UUID.fromString(concept.get("id").asString())).query(String.class).single())
+                .isEqualTo("DRAFT");
+    }
+
+    @Test
     void metadataImportIsRolledBackWhenAuditFails() throws Exception {
         JsonNode created = body(mvc.perform(post("/api/v1/data-sources").header(HttpHeaders.AUTHORIZATION, steward)
                         .contentType(MediaType.APPLICATION_JSON)

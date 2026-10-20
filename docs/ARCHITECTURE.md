@@ -7,6 +7,8 @@
 | 1.2 | I3: migraciones de producción en un job independiente (D15) | 19 oct 2026 |
 | 1.3 | D10: migración a Spring Boot 4.1.1 (Java 21) | 19 oct 2026 |
 | 1.4 | S2 Basic: importación persistente de metadatos de Discovery (V5, I7 resuelto, D16–D18) | 19 oct 2026 |
+| 1.5 | S3 Basic: catálogo semántico mínimo (V6, D14 resuelta, D19–D21) | 20 oct 2026 |
+| 1.6 | S3.1: catálogo de relaciones semánticas entre objetos físicos (V7, D22–D27) | 20 oct 2026 |
 
 Estado vivo del proyecto: [PROJECT_STATUS.md](PROJECT_STATUS.md) · Historial: [CHANGELOG.md](CHANGELOG.md).
 
@@ -231,6 +233,7 @@ cada cambio es una migración nueva.
 | `metadata_snapshot` | S2 Basic ✅ (V5) | id, tenant_id, data_source_id, contract_version, engine, database_name, product_version, discovered_at, requested_schemas jsonb (`[]` = todos), content_sha256, outcome (APPLIED/UNCHANGED), observed/added/updated/unchanged/missing/reappeared_count, unavailable_schemas jsonb, imported_by/at | FK `(tenant_id, data_source_id)` → data_source; `UNIQUE(tenant_id, data_source_id, id)`; append-only (grants + triggers) |
 | `physical_object` | S2 Basic ✅ (V5) | id, tenant_id, data_source_id, object_type, parent_id, schema_name, object_name, child_name, natural_key, attributes jsonb, comment, attributes_sha256, status (ACTIVE/MISSING/UNAVAILABLE), first/last_seen_snapshot_id, missing_since_snapshot_id, created_at, updated_at | `UNIQUE(tenant_id,data_source_id,object_type,natural_key)`; FK compuestas `(tenant_id, data_source_id, …)` a data_source, al padre y a los snapshots; checks de forma y estado; `UPDATE` solo de columnas mutables + trigger de inmutabilidad; sin DELETE. Sin columna `signature` (rutinas fuera de S2 Basic) |
 | `schema_change` | S2 completo (pendiente) | id, tenant_id, data_source_id, snapshot_id, physical_object_id, change_type, severity, before, after, status, acknowledged_by/at | — (S2 Basic registra los recuentos por snapshot y el estado por objeto) |
+| **`semantic_definition`** | **S3 Basic ✅ (V6)** | id, tenant_id, data_source_id, kind (CONCEPT/METRIC/DIMENSION), key, name, description, status (DRAFT/APPROVED/INACTIVE), origin (MANUAL/AI), relation_object_id, column_object_id, concept_id, aggregation (COUNT/SUM/AVG), dimension_type (CATEGORICAL/TEMPORAL), granularities jsonb, time_zone, created_by(+type)/at, updated_by(+type)/at, approved_by/at, inactive_reason, row_version | FK compuestas `(tenant_id, data_source_id, …)` a data_source, a `physical_object` (relación y columna) y a `semantic_definition` (concepto); `UNIQUE(tenant_id,data_source_id,kind,key)`; checks de forma por tipo y de ciclo de vida; trigger de inmutabilidad; `UPDATE` solo de columnas mutables; sin DELETE. **Sustituye en S3 Basic** a las tablas siguientes de S3 completo (D19) |
 | `catalog_state` | S3 | tenant_id, data_source_id, current_revision | bloqueo `FOR UPDATE` al publicar |
 | `definition` | S3 | id, tenant_id, data_source_id, kind, key, status, health, health_reason, current_version_id, row_version | `UNIQUE(tenant_id,data_source_id,kind,key)` |
 | `definition_version` | S3 | id, tenant_id, definition_id, version_no, spec_version, spec, labels, content_sha256, catalog_revision, source_proposal_id, published_by/at, change_note | inmutable (trigger) |
@@ -352,7 +355,9 @@ En `PATCH`, un campo ausente no cambia; `description: ""` la elimina.
 |---|---|
 | S2 Basic ✅ | `POST /data-sources/{id}/snapshots` (`semantic:source:manage`) · `GET …/snapshots[/{sid}]` · `GET …/objects?type&schema&status&parentId[/{oid}]` (`semantic:catalog:read`) |
 | S2 completo (pendiente) | `GET …/changes` · `POST /changes/{cid}/acknowledge` |
-| S3 | `GET /definitions…` · `/versions` · `/dependents` · `GET /catalog/terms` · `POST /proposals` · `PUT /proposals/{id}/draft` · `POST /proposals/{id}/{validate,submit,approve,reject,request-changes,withdraw}` |
+| S3 Basic ✅ | Base `/data-sources/{id}/definitions`: `POST` (`semantic:proposal:write`) · `GET` `?kind&status` y `GET /{defId}` (`semantic:catalog:read`) · `PUT /{defId}` con `If-Match` (`proposal:write`) · `POST /{defId}/approve` con `If-Match` y `POST /{defId}/deactivate` `{reason}` con `If-Match` (`semantic:proposal:approve`). Códigos nuevos: 422 `definition_invalid` (`errors[{code, field, message}]`), 409 `invalid_state_transition`, 403 `self_approval_forbidden` / `non_human_approval_forbidden` |
+| S3.1 ✅ | Base `/data-sources/{id}/relationships`: `POST` (SEMANTIC) y `POST /from-foreign-key` (DECLARED_FK) (`semantic:proposal:write`) · `GET` `?status&origin&objectId` · `GET /{relId}` · `GET /{relId}/contract` (`semantic:catalog:read`) · `PUT /{relId}` con `If-Match` (solo `name`, `description`, `declaredCardinality`, `allowedJoinTypes`) · `POST /{relId}/approve` y `POST /{relId}/deactivate` con `If-Match` (`semantic:proposal:approve`) · `GET /data-sources/{id}/relationship-candidates?objectId&limit` (`semantic:catalog:read`). Códigos nuevos: 422 `relationship_invalid`, 409 `relationship_equivalent_exists` (con `existingRelationshipId`) |
+| S3 completo (pendiente) | `GET /definitions…` · `/versions` · `/dependents` · `GET /catalog/terms` · `POST /proposals` · `PUT /proposals/{id}/draft` · `POST /proposals/{id}/{validate,submit,approve,reject,request-changes,withdraw}` |
 | S4 | `POST /resolutions` (200 con RESOLVED/AMBIGUOUS/UNRESOLVABLE, persiste `semantic_plan`) · `GET /resolutions/{id}` · `POST /resolutions/{id}/replay` · `GET /catalog?asOfRevision` |
 | S5 | `POST /data-sources/{id}/suggestion-runs` (202) · `GET /suggestion-runs/{id}` |
 
@@ -365,9 +370,9 @@ En `PATCH`, un campo ausente no cambia; `description: ""` la elimina.
 | 403 | `forbidden`, `tenant_access_denied`; (S3) `self_approval_forbidden`, `non_human_approval_forbidden` |
 | 404 | `not_found` |
 | 405 / 415 / 406 | `method_not_allowed` / `unsupported_media_type` / `not_acceptable` |
-| 409 | `duplicate_key`; (S3) `invalid_state_transition`, `stale_proposal`, `revision_mismatch` |
+| 409 | `duplicate_key`; (S3) `invalid_state_transition`, `stale_proposal`, `revision_mismatch`; (S3.1) `relationship_equivalent_exists` |
 | 412 / 428 | `precondition_failed` / `precondition_required` |
-| 413 / 422 | (S2) `payload_too_large` / `snapshot_mismatch`; (S3) `semantic_validation_failed` |
+| 413 / 422 | (S2) `payload_too_large` / `snapshot_mismatch`; (S3) `definition_invalid`; (S3.1) `relationship_invalid` |
 | 429 / 503 | (S5) `too_many_requests` / `ai_unavailable` |
 | 500 | `internal_error` |
 
@@ -383,7 +388,10 @@ tipado; **Semantic no genera ni ejecuta SQL**.
 1. **Términos → definiciones**: id/key exacta o `synonym_index` normalizado. Varios candidatos del mismo
    tipo sin `primary` ⇒ `AMBIGUOUS_TERM`. Nunca se adivina.
 2. Solo versiones vigentes en `asOfRevision` (o actual), `health ≠ BROKEN`, `status ≠ RETIRED`.
-3. **Grafo de entidades** construido exclusivamente con RELATIONSHIP aprobadas.
+3. **Grafo de entidades** construido exclusivamente con RELATIONSHIP aprobadas. Desde S3.1 (§13) existen como
+   relaciones entre **objetos físicos**; S4 las enlazará con los conceptos a través del objeto físico de cada
+   concepto, usando solo las que su contrato marca como `usable`, y tratando `rowMultiplicationRisk = POSSIBLE`
+   como riesgo real de fan-out aunque la cardinalidad declarada diga lo contrario. *(No implementado.)*
 4. **Grano y fan-out (ajuste 3):**
    - Toda métrica declara su concepto base y su grano (`grainKey`). La medida debe pertenecer al concepto
      base (o a conceptos alcanzados por MANY_TO_ONE/ONE_TO_ONE, funcionalmente dependientes del grano).
@@ -624,11 +632,20 @@ detalle operativo está en el README.
 | D11 | Sin métricas derivadas en el MVP (solo `SIMPLE` con expresiones intra-fila) | **Aprobada** (ajuste 10) | Prioridad MVP de Reports. |
 | D12 | Alta de tenants por `/api/v1/admin/tenants` con `platform:tenant:manage` | **Aprobada** (aprobación general) — implementada en S1 | Necesaria para operar y probar el aislamiento; sin autoaprovisionamiento desde claims. |
 | D13 | **Bloquear** agregaciones que mezclen monedas sin separación o conversión explícita | **Aprobada** (ajuste 9) | Evita cifras monetarias incorrectas. |
-| D14 | Zona horaria: valor por tenant, sobrescribible por dimensión | **Pendiente** (necesaria en S3) | Afecta a la granularidad temporal de dimensiones. |
+| D14 | Zona horaria: valor por tenant, sobrescribible por dimensión | **Resuelta (mínima) en S3 Basic** | Cada dimensión temporal sobre una columna `timestamptz` declara una zona IANA, `UTC` por defecto; las columnas `date` y `timestamp` no admiten zona porque guardan hora local; las granularidades son DAY, WEEK, MONTH, QUARTER y YEAR (todas por defecto). La zona por defecto a nivel de tenant queda diferida: no hay tabla de configuración de tenant y no hace falta para la prueba de concepto. |
 | D15 | En producción, migraciones con un **job independiente** (`SchemaMigrationMain`, mismo JAR, identidad migradora propia) y aplicación con perfil `prod`: Flyway deshabilitado y verificación de mínimo privilegio al arrancar (§8.6) | **Aprobada** (requisitos de I3). Mecanismo concreto (JAR + `PropertiesLauncher`) **pendiente de confirmación** | Las credenciales DDL nunca llegan al proceso de la aplicación. Mismo artefacto ⇒ mismas migraciones y versión de Flyway. Alternativa descartada por ahora: CLI o imagen oficial de Flyway (otra herramienta y otra versión que mantener sincronizadas). Tras D10 se verificó con Spring Boot 4.1.1: `org.springframework.boot.loader.launch.PropertiesLauncher` sigue en el JAR y el job funciona desde el artefacto empaquetado (Flyway 12.4.0). |
 | D16 | Sobre de importación `discovery-api/0.1` (envoltorio de Semantic alrededor de la respuesta 200 de Discovery, sin modificarla) como contrato de S2 | **Implementada** en S2 Basic; sigue siendo **provisional** hasta que Discovery la conozca o la sustituya | Discovery no devuelve el alcance solicitado ni la fecha; el sobre los aporta sin tocar Discovery (D1). Cambios incompatibles ⇒ nueva `contractVersion`. |
 | D17 | Alcance de S2 Basic: tablas, vistas, vistas materializadas, columnas, PK y FK; estado `UNAVAILABLE` solo para esquemas; rutinas, `schema_change` y `TypeCategoryMapper` diferidos | **Implementada** (instrucción de S2 Basic: solo lo necesario para la primera integración) | Prioridad de la prueba de concepto; el historial mínimo lo dan los snapshots y el estado por objeto. |
+| D19 | **S3 Basic simplifica el modelo de propuestas de S0**: definiciones directas con ciclo DRAFT → APPROVED → INACTIVE; editar una definición (en cualquier estado) la devuelve a DRAFT y exige una nueva aprobación; el historial queda en la auditoría | **Implementada** (instrucción de S3 Basic: sin gobierno ni versionado avanzados). Se mantienen los invariantes de D3: aprueba solo un HUMAN con `proposal:approve`, distinto del autor y del último editor, y nunca IA ni servicios | Contradice el §5.1–5.2 de S0 (propuestas, revisiones, versiones inmutables, revisión de catálogo), que queda como diseño de **S3 completo**. Consecuencia para S4: sin versiones inmutables no hay planes reproducibles por `asOfRevision` (ajuste 4) hasta implementarlas. |
+| D20 | Referencias de las definiciones en **columnas tipadas** con FK compuestas `(tenant_id, data_source_id, id)`, no en un spec JSON; sin lenguaje de expresiones | **Implementada** (V6) | La base de datos impide referencias entre tenants o fuentes incluso ante errores de código. S3 Basic necesita a lo sumo una relación, una columna y un concepto por definición. |
+| D21 | **Invalidación automática** en la misma transacción de la importación: las definiciones APPROVED que dejan de validar (objeto `MISSING`, tipo incompatible o concepto no utilizable) pasan a INACTIVE y no se reactivan solas | **Implementada** | Cumple «no utilizable hasta su revisión». `usable` = APPROVED y sin problemas, evaluado contra los metadatos actuales en cada lectura. |
 | D18 | Escrituras por lotes con `NamedParameterJdbcOperations` en `JdbcPhysicalObjectRepository` (complementa D6) | **Implementada** | `JdbcClient` no tiene API de lotes; una importación puede tocar decenas de miles de objetos. Misma familia Spring JDBC, confinada a `infrastructure.persistence` (ArchUnit). |
+| D22 | Las relaciones (S3.1) se definen **entre objetos físicos** (tablas o vistas) de una misma fuente, no entre conceptos; no existe un segundo catálogo de relaciones entre conceptos | **Implementada** (V7) | Un concepto de S3 se apoya en exactamente un objeto físico, así que S4 puede llegar a las relaciones a través de esa vinculación sin duplicar información. Varios conceptos sobre la misma tabla comparten sus relaciones. |
+| D23 | **Pares de columnas inmutables** (opción a): el origen, el destino, los pares, la procedencia y la FK de respaldo no se editan; para corregirlos se crea una relación nueva con `replacesId` y, al aprobarla, la anterior pasa a INACTIVE en la misma transacción. Solo se editan nombre, descripción, cardinalidad declarada y tipos de JOIN (⇒ DRAFT) | **Implementada** | La identidad de un JOIN es su conjunto de pares; editarla en sitio rompería el historial y la trazabilidad de lo aprobado. La tabla de pares es append-only (trigger + grants). |
+| D24 | **Equivalencia** = mismas columnas unidas, sin importar el orden de los pares ni la dirección (firma SHA-256 canónica). Nunca dos equivalentes APPROVED (índice único parcial en BD); la aplicación rechaza además un DRAFT equivalente a otro DRAFT/APPROVED, salvo que lo sustituya explícitamente | **Implementada** | Evita rutas ambiguas o duplicadas; la garantía no depende del código. Relaciones distintas entre las mismas tablas (p. ej. dos roles) siguen permitidas y su ambigüedad la resolverá S4. |
+| D25 | **Cardinalidad declarada ≠ evidencia**: la cardinalidad la declara una persona y no es garantía; la única evidencia de unicidad es que las columnas de un extremo coincidan **exactamente** con una PK conocida (Discovery no informa de UNIQUE); la evidencia de FK se guarda aparte; ambas se calculan contra los metadatos actuales en cada lectura | **Implementada** | `measurements.equipment_dbid = equipment.dbid` puede aprobarse, pero su contrato dice `targetUniqueness = UNKNOWN`, `cardinalityAssurance = DECLARED_ONLY` y riesgo de multiplicación `POSSIBLE`. Sin análisis de datos. |
+| D26 | Toda relación nueva empieza en **DRAFT**, también las creadas desde una FK; la FK se resuelve por clave natural exacta y, si no se puede (p. ej. esquema no importado), se rechaza con el motivo, sin inventar la referencia | **Implementada** | Mismas reglas de aprobación que S3 (D3/D19): aprueba un HUMAN distinto del autor y del último editor; nunca IA ni servicios. |
+| D27 | **Pérdida de FK**: si desaparece (o cambia) la FK que respalda una relación DECLARED_FK aunque las columnas sigan, la relación APPROVED pasa a INACTIVE (`FOREIGN_KEY_LOST`) y no puede volver a aprobarse mientras falte; para seguir usándola, una persona crea una relación SEMANTIC equivalente con `replacesId` (flujo explícito) y otra la aprueba | **Implementada** | Ajuste del usuario: nunca convertir en silencio una relación respaldada en una relación declarada utilizable. El historial (DECLARED_FK, aprobación anterior, motivo) se conserva. |
 
 ---
 
@@ -648,7 +665,12 @@ detalle operativo está en el README.
 | R10 | Payload importado falsificado | Sin ejecución en Semantic; revalidación en el Motor de consultas; auditoría del importador. |
 | R11 | Visibilidad de catálogo confundida con permiso de datos | Autorización de datos en el Motor de consultas. |
 | R12 | Spring Boot 3.5 sin soporte OSS (D10) | **Mitigado**: migrado a 4.1.1 (soporte OSS hasta el 31-jul-2027). Planificar la siguiente actualización antes de esa fecha. |
+| R15 | Sin versiones inmutables de definiciones (D19), un plan de S4 no puede reproducirse con exactitud después de revisar una definición | Recuperar en S4 el registro inmutable del contenido aprobado, o como mínimo guardar en el plan una copia del contenido de cada definición usada |
+| R16 | Separación de funciones obligatoria: la prueba de concepto necesita al menos dos personas (editor y aprobador) en el proveedor OIDC | Configurar dos usuarios en Keycloak (Wellnode) |
 | R14 | El sobre de importación (`discovery-api/0.1`) es un contrato propuesto por Semantic que Discovery aún no conoce; un cambio en la respuesta de Discovery podría pasar inadvertido | Lectura tolerante + validación estructural + fixtures reales; versionar el sobre ante cambios incompatibles (D16) |
+| R17 | Una relación aprobada sin evidencia de unicidad (`DECLARED_ONLY`) puede multiplicar filas si la declaración es errónea (caso `equipment.dbid`) | El contrato de S4 expone `targetUniqueness`, `cardinalityAssurance` y `rowMultiplicationRisk`; S4 deberá tratar `POSSIBLE` como fan-out. `DISTINCT` no es un remedio |
+| R18 | Discovery no informa de restricciones UNIQUE ni índices únicos: claves de negocio realmente únicas aparecen como `UNKNOWN` | Documentado; ampliar el contrato de Discovery en el futuro. No se infiere unicidad de nombres ni de datos |
+| R19 | Las sugerencias de candidatas son heurísticas (nombres, tipos, comentarios) y pueden proponer relaciones falsas | Se marcan como heurísticas con señales explicables, nunca se guardan y requieren DRAFT + aprobación humana |
 | R13 | Cambios silenciosos de configuración y serialización entre versiones mayores (encontrados en D10: claves `server.error.*` ignoradas y `type` de RFC 7807 omitido) | Verificar en cada actualización mayor con `spring-boot-properties-migrator` y pruebas de contrato de las respuestas (añadidas). |
 
 ---
@@ -772,6 +794,143 @@ requerido**; autoaprobación y aprobación por quien editó ⇒ 403; principal A
 403; una política configurada no puede relajar invariantes; revisión distinta ⇒ 409; base desactualizada ⇒
 409; referencias rotas ⇒ 422; `definition_version` inmutable; auditoría por acción; escenario "ventas"
 manual completo.
+
+**S3 Basic ✅ (20 oct 2026)** — catálogo mínimo sobre los metadatos de S2 (D19–D21, D14):
+
+| Implementado | Diferido a S3 completo |
+|---|---|
+| CONCEPT (tabla, vista o vista materializada), METRIC (COUNT, SUM, AVG), DIMENSION (CATEGORICAL, TEMPORAL con granularidades y zona) | RULE (filtros), sinónimos, métricas derivadas, grano declarado en vistas (RELATIONSHIP: ver S3.1) |
+| Referencias por id de `physical_object` y de concepto, validadas por tenant y fuente (aplicación y FK) | Propuestas, revisiones, versiones inmutables, revisión de catálogo, `asOfRevision` |
+| Compatibilidad por categoría de tipo (`TypeCategory`, PostgreSQL) | Políticas de aprobación configurables (D3) |
+| Ciclo DRAFT → APPROVED → INACTIVE; aprobación humana con separación de funciones | Unidades y monedas (D13) |
+| Invalidación automática por importación; `usable` e `issues` en cada respuesta | |
+
+Criterios verificados con metadatos reales de Discovery:
+- creación y aprobación de conceptos, métricas y dimensiones;
+- métrica sobre concepto no aprobado ⇒ 422;
+- referencias de tipo incorrecto, inexistentes, de otra relación, de otra fuente o de otro tenant ⇒ 422, y
+  prohibidas también en la base de datos;
+- SUM sobre texto, TEMPORAL sobre texto y zona sobre `date` ⇒ 422;
+- vista eliminada (v2) ⇒ concepto y métrica dependiente `INACTIVE`, que siguen inactivos al restaurar la vista
+  hasta revisarlos;
+- columna `numeric` → `text` ⇒ métrica SUM `INACTIVE`;
+- autoaprobación ⇒ 403 `self_approval_forbidden`;
+- IA o servicio con rol APPROVER ⇒ 403;
+- aislamiento entre tenants, auditoría, rollback si falla la auditoría;
+- perfil `prod` con solo el rol de aplicación.
+
+### S3.1 — Catálogo de relaciones semánticas ✅ (20 oct 2026)
+
+Relaciones persistentes entre **objetos físicos** (tablas, vistas o vistas materializadas) del mismo tenant y la
+misma fuente (D22). No se presupone nada de los nombres, de columnas `id`, de PK ni de FK: por ejemplo,
+`plant.measurements.equipment_dbid = plant.equipment.dbid` se registra aunque exista `equipment.id` y aunque
+`dbid` no sea PK, UNIQUE ni FK.
+
+**Modelo (V7).**
+- `semantic_relationship`:
+  - nombre y descripción;
+  - procedencia `DECLARED_FK` o `SEMANTIC`;
+  - objetos origen y destino;
+  - FK de respaldo (solo `DECLARED_FK`);
+  - cardinalidad declarada (`ONE_TO_ONE`, `ONE_TO_MANY`, `MANY_TO_ONE`, `MANY_TO_MANY`, leída de origen a destino);
+  - JOIN autorizados (`INNER`, `LEFT`);
+  - `replacesId`;
+  - firma de equivalencia;
+  - ciclo `DRAFT`/`APPROVED`/`INACTIVE`;
+  - autor, último editor, aprobador, `row_version` y motivo de inactividad.
+- `semantic_relationship_pair`: pares ordenados `origen.columna = destino.columna`, de 1 a 16 por relación. Es append-only.
+- Todas las referencias usan FK compuestas `(tenant_id, data_source_id, id)`.
+- Un trigger impide cambiar extremos, procedencia, evidencia, firma, sustitución y autoría, incluso al propietario.
+- El rol de aplicación no puede borrar.
+- Un índice único parcial impide dos relaciones equivalentes en estado APPROVED (D24).
+
+**Validación física** (antes de crear y de aprobar; también en cada lectura):
+- extremos de tipo tabla o vista, existentes en la fuente y no `MISSING`;
+- cada columna existe, pertenece a su lado y no está `MISSING`;
+- tipos compatibles: misma `TypeCategory` o, si el tipo no está categorizado, exactamente el mismo tipo;
+- sin pares repetidos (`DUPLICATE_PAIR`) ni contradictorios: una columna en dos pares o unida consigo misma (`CONTRADICTORY_PAIR`);
+- para `DECLARED_FK`, la FK sigue observada y une exactamente esas columnas; si no, `FOREIGN_KEY_LOST`;
+- sin otra relación equivalente en uso.
+
+Errores: 422 `relationship_invalid` (con `errors[{code, field, message}]`) y 409 `relationship_equivalent_exists`.
+No se acepta SQL ni expresiones.
+
+**Pares inmutables y sustitución (D23).**
+- Solo se editan nombre, descripción, cardinalidad declarada y tipos de JOIN, con `If-Match`; el resultado vuelve a DRAFT.
+- Para corregir los pares se crea una relación nueva con `replacesId`. La anterior sigue utilizable hasta que se aprueba la nueva.
+- Al aprobar la nueva, la anterior pasa a INACTIVE en la misma transacción, antes de la aprobación, con motivo `Replaced by relationship <id>` y auditoría `RELATIONSHIP_REPLACED`.
+- No hay ninguna ventana con dos relaciones equivalentes aprobadas. Las dos filas se conservan.
+
+**Aprobación (D3/D19, D26).**
+- Mismo componente de dominio que las definiciones (`ApprovalRules`).
+- Toda relación nueva nace en DRAFT, también la creada desde una FK.
+- Aprueba un HUMAN con `semantic:proposal:approve`, distinto del autor y del último editor; IA y servicios ⇒ 403.
+- Una relación en DRAFT, INACTIVE o físicamente inválida no es `usable`.
+
+**Cardinalidad frente a evidencia (D25).** La evidencia se calcula contra los metadatos actuales y nunca a partir de la declaración:
+- `sourceUniqueness` y `targetUniqueness`: `PRIMARY_KEY` solo si las columnas de ese extremo son exactamente su PK conocida. En cualquier otro caso es `UNKNOWN`, también cuando cubren una parte de una PK compuesta.
+- `foreignKey`: `PRESENT`, `LOST` o `NOT_DECLARED`.
+- `cardinalityAssurance`:
+  - `BACKED_BY_PRIMARY_KEY` si cada extremo declarado «uno» tiene PK;
+  - `DECLARED_ONLY` si alguno no la tiene;
+  - `NO_UNIQUENESS_CLAIM` para N:M.
+- Riesgo de multiplicación de filas en cada dirección: `NONE_BY_PRIMARY_KEY` o `POSSIBLE`.
+
+La unicidad de un extremo no se presenta como cardinalidad completa. `DISTINCT` no se considera un remedio.
+
+**Relaciones desde FK.**
+- `POST …/relationships/from-foreign-key` resuelve la FK de S2 (columnas y destino guardados por nombre) por **clave natural exacta**, respetando mayúsculas, dentro de la fuente.
+- Comprueba que existen el objeto destino y todas las columnas, y guarda la FK como evidencia.
+- Si no se puede resolver (esquema no importado, nombre con otra capitalización, columna ausente), devuelve 422 `REFERENCE_UNRESOLVABLE` con el campo concreto y no inventa la referencia.
+- Las FK no resolubles también se listan con su motivo en las candidatas.
+- Repetir la creación ⇒ 409, sin duplicados.
+
+**Invalidación (D21 ampliada, D27).** `RelationshipInvalidationService` se ejecuta en la transacción de la importación (tras las definiciones):
+- Cada relación APPROVED que deja de validar pasa a INACTIVE con el motivo `Invalidated by metadata import: <códigos>`. Ocurre cuando:
+  - un objeto o una columna pasa a `MISSING`;
+  - un tipo cambia de forma incompatible;
+  - la FK de respaldo se pierde o cambia.
+- Se audita `RELATIONSHIP_INVALIDATED` con `issues` y `foreignKeyLost`. El snapshot cuenta `invalidatedRelationships`.
+- Es idempotente: una segunda importación igual no hace nada.
+- Nunca se reactiva sola. Una persona la revisa (PUT ⇒ DRAFT) y otra la aprueba.
+- Con la FK perdida no puede volver a aprobarse; el flujo explícito es una relación SEMANTIC equivalente con `replacesId`.
+- Ninguna definición de S3 depende de relaciones, así que no hay dependientes que propagar; la auditoría deja el registro para S4.
+
+**Sugerencias (`GET /data-sources/{id}/relationship-candidates`).**
+- Deterministas, calculadas bajo demanda y nunca guardadas. No usan LLM, embeddings ni datos.
+- Fuentes de las sugerencias:
+  - FK activas resolubles: `STRONG`, `DECLARED_FK`;
+  - nombre de columna de origen `<tabla>_<columna>` o `<tabla en singular>_<columna>`;
+  - mismo nombre distintivo hacia la PK de una sola columna o hacia un identificador de negocio (`dbid`, `sku`, `*_code`, `*_number`…);
+  - comentario que menciona la tabla destino.
+- Exigen tipos compatibles y nunca emparejan por nombre una columna `id`.
+- Cada candidata lleva señales explicables, `heuristic: true`, `heuristicScore` (0–1, solo para ordenar) y `classification`.
+- Se omiten las ya catalogadas (`alreadyCataloged`).
+- Límites: `limit` ≤ 100 y ≤ 20 000 columnas examinadas; si se supera alguno, `truncated`. El coste es lineal (búsquedas hash).
+- Filtro opcional `objectId`.
+
+**Contrato para S4.**
+- `RelationshipContract` (dominio), expuesto en `GET …/relationships/{id}/contract` y en `SemanticRelationshipService.approvedContracts`.
+- Contenido:
+  - ids de objetos y columnas;
+  - pares ordenados y dirección origen → destino;
+  - cardinalidad declarada;
+  - evidencia completa;
+  - FK, si la hay;
+  - JOIN autorizados;
+  - estado, `usable` y motivos de invalidez (`invalidReasons`);
+  - versión.
+- Sin resolución de rutas, planes, SQL ni ejecución.
+
+**Limitaciones conocidas.**
+- Sin análisis de datos: la unicidad real de `dbid` es desconocida.
+- Discovery no informa de UNIQUE.
+- Relaciones entre fuentes distintas: no soportadas.
+- Sin versiones inmutables (D19): el historial está en filas sustituidas y en auditoría.
+- Las heurísticas de nombres están pensadas para nombres en inglés (singular ingenuo).
+- `TypeCategory` solo categoriza PostgreSQL.
+
+Criterios verificados: los 30 de la sección 14 de la especificación (ver PROJECT_STATUS y CHANGELOG §9).
 
 ### S4 — Resolución semántica, reproducibilidad e impacto
 

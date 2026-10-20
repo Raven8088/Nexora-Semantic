@@ -18,6 +18,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -99,6 +100,35 @@ public class JdbcPhysicalObjectRepository implements PhysicalObjectRepository {
                 .param("id", objectId)
                 .query(mapper)
                 .optional();
+    }
+
+    @Override
+    public List<PhysicalObject> findByIds(TenantId tenantId, DataSourceId dataSourceId, Collection<UUID> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return jdbc.sql("SELECT " + COLUMNS + " FROM physical_object "
+                        + "WHERE tenant_id = :tenantId AND data_source_id = :dataSourceId AND id IN (:ids)")
+                .param("tenantId", tenantId.value())
+                .param("dataSourceId", dataSourceId.value())
+                .param("ids", List.copyOf(ids))
+                .query(mapper)
+                .list();
+    }
+
+    @Override
+    public List<PhysicalObject> findByNaturalKeys(TenantId tenantId, DataSourceId dataSourceId,
+                                                  Collection<NaturalKey> naturalKeys) {
+        if (naturalKeys.isEmpty()) {
+            return List.of();
+        }
+        return jdbc.sql("SELECT " + COLUMNS + " FROM physical_object WHERE tenant_id = :tenantId "
+                        + "AND data_source_id = :dataSourceId AND natural_key IN (:naturalKeys)")
+                .param("tenantId", tenantId.value())
+                .param("dataSourceId", dataSourceId.value())
+                .param("naturalKeys", naturalKeys.stream().map(NaturalKey::value).distinct().toList())
+                .query(mapper)
+                .list();
     }
 
     @Override

@@ -1,5 +1,7 @@
 package com.nexora.semantic.application.source;
 
+import com.nexora.semantic.application.catalog.CatalogInvalidationService;
+import com.nexora.semantic.application.catalog.RelationshipInvalidationService;
 import com.nexora.semantic.application.port.AuditLog;
 import com.nexora.semantic.application.port.DataSourceRepository;
 import com.nexora.semantic.application.port.DiscoveredMetadataReader;
@@ -29,7 +31,8 @@ import java.util.UUID;
 /**
  * Imports Nexora Discovery metadata into a data source of the caller's tenant (S2 Basic). One transaction: the data
  * source row is locked (imports into the same source are serialized), the payload is reconciled with the known
- * objects, the snapshot, the object changes and the audit event are written together or not at all.
+ * objects, approved semantic definitions (S3 Basic) and relationships (S3.1) that no longer validate are invalidated,
+ * and the snapshot, the object changes, the invalidations and the audit events are written together or not at all.
  */
 @Transactional
 public class MetadataImportService {
@@ -39,17 +42,22 @@ public class MetadataImportService {
     private final MetadataSnapshotRepository snapshots;
     private final PhysicalObjectRepository objects;
     private final AuditLog auditLog;
+    private final CatalogInvalidationService catalogInvalidation;
+    private final RelationshipInvalidationService relationshipInvalidation;
     private final Clock clock;
     private final MetadataReconciler reconciler = new MetadataReconciler();
 
     public MetadataImportService(DataSourceRepository dataSources, DiscoveredMetadataReader reader,
                                  MetadataSnapshotRepository snapshots, PhysicalObjectRepository objects,
-                                 AuditLog auditLog, Clock clock) {
+                                 AuditLog auditLog, CatalogInvalidationService catalogInvalidation,
+                                 RelationshipInvalidationService relationshipInvalidation, Clock clock) {
         this.dataSources = dataSources;
         this.reader = reader;
         this.snapshots = snapshots;
         this.objects = objects;
         this.auditLog = auditLog;
+        this.catalogInvalidation = catalogInvalidation;
+        this.relationshipInvalidation = relationshipInvalidation;
         this.clock = clock;
     }
 
@@ -82,6 +90,9 @@ public class MetadataImportService {
         snapshots.insert(snapshot);
         objects.insertAll(result.toInsert());
         objects.updateAll(result.toUpdate());
+        int invalidated = catalogInvalidation.invalidateAfterImport(caller, dataSource, snapshot.id(), now);
+        int invalidatedRelationships = relationshipInvalidation.invalidateAfterImport(caller, dataSource,
+                snapshot.id(), now);
 
         Map<String, Object> details = new LinkedHashMap<>();
         details.put("dataSourceId", dataSourceId.value().toString());
@@ -92,6 +103,8 @@ public class MetadataImportService {
         details.put("missing", snapshot.summary().missing());
         details.put("reappeared", snapshot.summary().reappeared());
         details.put("unavailableSchemas", snapshot.summary().unavailableSchemas());
+        details.put("invalidatedDefinitions", invalidated);
+        details.put("invalidatedRelationships", invalidatedRelationships);
         auditLog.append(AuditEvent.of(caller.tenantId(), now, caller.principal(), caller.correlationId(),
                 AuditAction.METADATA_SNAPSHOT_IMPORTED, AuditTargetType.METADATA_SNAPSHOT, snapshot.id(), details));
         return snapshot;
