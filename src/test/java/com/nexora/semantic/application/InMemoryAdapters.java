@@ -88,6 +88,11 @@ public final class InMemoryAdapters {
         }
 
         @Override
+        public Optional<DataSource> lockById(TenantId tenantId, DataSourceId id) {
+            return findById(tenantId, id);
+        }
+
+        @Override
         public Page<DataSource> findPage(TenantId tenantId, DataSourceStatus status, PageQuery q) {
             List<DataSource> all = rows.values().stream()
                     .filter(d -> d.tenantId().equals(tenantId))

@@ -17,6 +17,12 @@ public interface DataSourceRepository {
 
     Optional<DataSource> findById(TenantId tenantId, DataSourceId id);
 
+    /**
+     * Like {@link #findById} but locks the row until the end of the transaction, serializing concurrent metadata
+     * imports into the same data source.
+     */
+    Optional<DataSource> lockById(TenantId tenantId, DataSourceId id);
+
     /** @param status optional filter; null returns every status */
     Page<DataSource> findPage(TenantId tenantId, DataSourceStatus status, PageQuery pageQuery);
 

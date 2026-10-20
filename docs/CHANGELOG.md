@@ -130,3 +130,53 @@ Basada en la guía oficial de migración a Spring Boot 4.0 y en las notas de 4.1
 ### Documentación
 - `ARCHITECTURE.md` v1.3 (D10 implementada; D15 verificada con 4.1.1; R12 mitigado; R13 nuevo).
 - Nuevos `PROJECT_STATUS.md` y `CHANGELOG.md`; README actualizado.
+
+## 7. S2 Basic — Importación persistente de metadatos de Discovery
+
+Precedido de la aceptación de S1. Discovery se consultó en modo de solo lectura: código, DTO (`DiscoveryResponse`,
+`ColumnMetadata`, `RelationshipMetadata`) y `API.md`; el contrato coincide con el observado en S0.
+
+### Añadido
+- **Respuestas reales de Discovery como fixtures** (`src/test/resources/discovery`):
+  - se capturaron ejecutando, sin compilar ni modificar su repositorio, el JAR existente de Discovery
+    0.1.0-SNAPSHOT contra un PostgreSQL 17.6 desechable inicializado con sus propios scripts;
+  - cuatro capturas: todos los esquemas, `sales`, `sales`+`restricted` y una segunda versión del esquema;
+  - ninguna contiene credenciales ni host.
+- **Dominio:** `NaturalKey` (identificadores entre comillas, exacta y sensible a mayúsculas),
+  `DiscoveredDatabase`, `PhysicalObject`, `ObjectAttributes` (huella SHA-256), `MetadataSnapshot` y
+  `MetadataReconciler` (conciliación pura por alcance: ACTIVE / MISSING / UNAVAILABLE, sin borrados).
+- **Aplicación:** `MetadataImportService` (una transacción, fila de la fuente bloqueada, auditoría
+  `METADATA_SNAPSHOT_IMPORTED`) y `PhysicalMetadataQueryService`.
+- **Capa anticorrupción (I7):** `JacksonDiscoveredMetadataReader` + `DiscoveryPayloadV01`.
+  - mapper propio;
+  - sobre `discovery-api/0.1` estricto y payload tolerante;
+  - validación estructural con rutas JSON y sin valores.
+- **Persistencia:** migración **V5** `create_physical_metadata` (`metadata_snapshot`, `physical_object`).
+  `JdbcMetadataSnapshotRepository`, `JdbcPhysicalObjectRepository` (lotes) y `DataSourceRepository.lockById`.
+- **API:**
+  - `POST /api/v1/data-sources/{id}/snapshots` (lectura acotada del cuerpo; 413 por encima de
+    `nexora.semantic.discovery.max-import-bytes`, 16 MiB por defecto);
+  - `GET …/snapshots`, `GET …/snapshots/{id}`, `GET …/objects?type&schema&status&parentId` y
+    `GET …/objects/{id}`;
+  - nuevos códigos `snapshot_invalid` (422), `snapshot_mismatch` (422), `unsupported_contract_version` (400) y
+    `data_source_archived` (409).
+- **Decisiones** D16 (sobre provisional), D17 (alcance de S2 Basic) y D18 (escrituras por lotes).
+
+### Cambiado
+- Pruebas de migración y del perfil `prod`: ahora esperan 5 migraciones y los triggers nuevos.
+
+### Verificación
+- **343 pruebas, 0 fallos** (65 nuevas). Con las respuestas reales de Discovery:
+  - importación completa con 48 objetos;
+  - reimportación `UNCHANGED` con los mismos ids;
+  - versión 2 del esquema ⇒ 6 añadidos, 2 actualizados y 5 `MISSING`;
+  - vuelta a v1 ⇒ 5 reaparecidos con el mismo id;
+  - alcance parcial sin efectos en otros esquemas;
+  - `restricted` ⇒ `unavailableSchemas`.
+- También verificado:
+  - errores 400, 413, 415, 422 y 409 sin efectos en la base de datos;
+  - aislamiento entre tenants (404) y permisos;
+  - rollback si falla la auditoría;
+  - inmutabilidad, append-only y FK compuestas en PostgreSQL;
+  - el rol de aplicación sigue siendo de mínimo privilegio.
+- La V5 se aplica igual con Flyway al arrancar y con el job independiente.

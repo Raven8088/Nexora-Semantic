@@ -6,6 +6,7 @@
 | 1.1 | Correcciones de auditoría B1, B2, I1, I2, I4, I5, I6 | 19 oct 2026 |
 | 1.2 | I3: migraciones de producción en un job independiente (D15) | 19 oct 2026 |
 | 1.3 | D10: migración a Spring Boot 4.1.1 (Java 21) | 19 oct 2026 |
+| 1.4 | S2 Basic: importación persistente de metadatos de Discovery (V5, I7 resuelto, D16–D18) | 19 oct 2026 |
 
 Estado vivo del proyecto: [PROJECT_STATUS.md](PROJECT_STATUS.md) · Historial: [CHANGELOG.md](CHANGELOG.md).
 
@@ -227,9 +228,9 @@ cada cambio es una migración nueva.
 | `tenant` | S1 | id, key, name, status, created_at/by, updated_at/by, row_version | `UNIQUE(key)` |
 | `data_source` | S1 | id, tenant_id, key, name, engine, database_name, description, status, created_at/by, updated_at/by, row_version | `UNIQUE(tenant_id,key)`, `UNIQUE(tenant_id,id)`; FK tenant; **sin credenciales** |
 | `audit_event` | S1 | id, tenant_id, occurred_at, actor_id, actor_type, action, target_type, target_id, correlation_id, details jsonb | append-only (grants + trigger); FK tenant |
-| `metadata_snapshot` | S2 | id, tenant_id, data_source_id, contract_version, engine, product_version, database_name, scope_schemas text[], content_sha256, object_count, outcome, imported_by/at | FK compuesta a data_source |
-| `physical_object` | S2 | id, tenant_id, data_source_id, parent_id, object_type, schema_name, object_name, child_name, signature, natural_key, attributes jsonb, comment, attributes_hash, status, first/last_seen_snapshot_id, missing_since_snapshot_id | `UNIQUE(tenant_id,data_source_id,object_type,natural_key)` |
-| `schema_change` | S2 | id, tenant_id, data_source_id, snapshot_id, physical_object_id, change_type, severity, before, after, status, acknowledged_by/at | — |
+| `metadata_snapshot` | S2 Basic ✅ (V5) | id, tenant_id, data_source_id, contract_version, engine, database_name, product_version, discovered_at, requested_schemas jsonb (`[]` = todos), content_sha256, outcome (APPLIED/UNCHANGED), observed/added/updated/unchanged/missing/reappeared_count, unavailable_schemas jsonb, imported_by/at | FK `(tenant_id, data_source_id)` → data_source; `UNIQUE(tenant_id, data_source_id, id)`; append-only (grants + triggers) |
+| `physical_object` | S2 Basic ✅ (V5) | id, tenant_id, data_source_id, object_type, parent_id, schema_name, object_name, child_name, natural_key, attributes jsonb, comment, attributes_sha256, status (ACTIVE/MISSING/UNAVAILABLE), first/last_seen_snapshot_id, missing_since_snapshot_id, created_at, updated_at | `UNIQUE(tenant_id,data_source_id,object_type,natural_key)`; FK compuestas `(tenant_id, data_source_id, …)` a data_source, al padre y a los snapshots; checks de forma y estado; `UPDATE` solo de columnas mutables + trigger de inmutabilidad; sin DELETE. Sin columna `signature` (rutinas fuera de S2 Basic) |
+| `schema_change` | S2 completo (pendiente) | id, tenant_id, data_source_id, snapshot_id, physical_object_id, change_type, severity, before, after, status, acknowledged_by/at | — (S2 Basic registra los recuentos por snapshot y el estado por objeto) |
 | `catalog_state` | S3 | tenant_id, data_source_id, current_revision | bloqueo `FOR UPDATE` al publicar |
 | `definition` | S3 | id, tenant_id, data_source_id, kind, key, status, health, health_reason, current_version_id, row_version | `UNIQUE(tenant_id,data_source_id,kind,key)` |
 | `definition_version` | S3 | id, tenant_id, definition_id, version_no, spec_version, spec, labels, content_sha256, catalog_revision, source_proposal_id, published_by/at, change_note | inmutable (trigger) |
@@ -295,6 +296,24 @@ La aprobación es una única transacción: bloquea `catalog_state`, incrementa r
 - `SchemaChange`: OPEN → ACKNOWLEDGED → RESOLVED. Tipos: OBJECT_ADDED, OBJECT_REMOVED, TYPE_CHANGED,
   NULLABILITY_CHANGED, PK_CHANGED, FK_ADDED, FK_REMOVED, COMMENT_CHANGED, SCHEMA_UNAVAILABLE.
 
+**Implementación en S2 Basic** (`MetadataReconciler`, servicio de dominio puro):
+
+| Estado del objeto | Cuándo |
+|---|---|
+| `ACTIVE` | Observado en la última importación que cubrió su esquema |
+| `MISSING` | Su esquema vino en el payload, pero el objeto no; `missing_since_snapshot_id` marca desde cuándo |
+| `UNAVAILABLE` | Solo esquemas: solicitado (o conocido, en una importación completa) y ausente del payload. Sus hijos conservan su estado y su `last_seen` |
+
+- Ningún objeto se borra; al reaparecer vuelve a `ACTIVE` con el mismo UUID (también si cambia de padre, p. ej.
+  una tabla sustituida por una vista con el mismo nombre: la tabla queda `MISSING` y las columnas se re-asignan).
+- Objetos fuera del alcance solicitado: intactos. Una importación completa no distingue un esquema eliminado de uno
+  revocado, por eso nunca lo marca `MISSING`, solo `UNAVAILABLE`.
+- Recuentos por snapshot: observados, añadidos, actualizados (huella SHA-256 de atributos y comentario, o padre
+  distinto), sin cambios, nuevos MISSING, reaparecidos y esquemas no disponibles. `outcome = UNCHANGED` si no hubo
+  ningún cambio.
+- Atomicidad y concurrencia: una transacción por importación, con la fila de la fuente de datos bloqueada
+  (`SELECT … FOR UPDATE`): importaciones simultáneas sobre la misma fuente se serializan.
+
 ### 5.4 Tenant y fuente de datos (S1)
 
 - Tenant: ACTIVE ↔ SUSPENDED (solo administrador de plataforma). Suspendido ⇒ `403 tenant_access_denied`.
@@ -331,7 +350,8 @@ En `PATCH`, un campo ausente no cambia; `description: ""` la elimina.
 
 | Etapa | Endpoints |
 |---|---|
-| S2 | `POST /data-sources/{id}/snapshots` · `GET …/snapshots[/{sid}]` · `GET …/objects[/{oid}]` · `GET …/changes` · `POST /changes/{cid}/acknowledge` |
+| S2 Basic ✅ | `POST /data-sources/{id}/snapshots` (`semantic:source:manage`) · `GET …/snapshots[/{sid}]` · `GET …/objects?type&schema&status&parentId[/{oid}]` (`semantic:catalog:read`) |
+| S2 completo (pendiente) | `GET …/changes` · `POST /changes/{cid}/acknowledge` |
 | S3 | `GET /definitions…` · `/versions` · `/dependents` · `GET /catalog/terms` · `POST /proposals` · `PUT /proposals/{id}/draft` · `POST /proposals/{id}/{validate,submit,approve,reject,request-changes,withdraw}` |
 | S4 | `POST /resolutions` (200 con RESOLVED/AMBIGUOUS/UNRESOLVABLE, persiste `semantic_plan`) · `GET /resolutions/{id}` · `POST /resolutions/{id}/replay` · `GET /catalog?asOfRevision` |
 | S5 | `POST /data-sources/{id}/suggestion-runs` (202) · `GET /suggestion-runs/{id}` |
@@ -550,6 +570,30 @@ detalle operativo está en el README.
 - Peticiones al equipo de Discovery (no bloqueantes): versionar la ruta, devolver esquemas solicitados y
   omitidos, exponer constraints `UNIQUE`, añadir autenticación.
 
+**Implementación en S2 Basic** (verificada contra respuestas reales del JAR de Discovery, ver
+`src/test/resources/discovery/README.md`):
+
+- **Capa anticorrupción** `infrastructure.discovery.JacksonDiscoveredMetadataReader`, con mapper Jackson propio:
+  - **sobre estricto:** campos desconocidos ⇒ 422; versión de contrato distinta de `discovery-api/0.1` ⇒ 400;
+  - **payload tolerante:** DTO `DiscoveryPayloadV01` con `@JsonIgnoreProperties(ignoreUnknown = true)`, que ignora
+    rutinas, `definition`, `defaultValue`, `autoIncrement` y campos futuros (**I7 resuelto**; la validación
+    estricta global de Semantic no cambia).
+- **Validación estructural** con rutas JSON y sin devolver valores:
+  - identificadores de 1 a 128 caracteres sin caracteres de control;
+  - nombres únicos por ámbito;
+  - columnas de PK y de FK existentes, y FK con el mismo número de columnas en origen y destino;
+  - esquemas no solicitados rechazados;
+  - como máximo 200 000 objetos.
+- **Normalización:**
+  - los comentarios son texto no confiable: se eliminan los caracteres de control y se truncan a 2000;
+  - la FK sin nombre recibe un nombre determinista.
+- **Cotejo con la fuente de datos:** `engine` y `database` del payload deben coincidir con los de la fuente; si no,
+  422 `snapshot_mismatch`. Solo se puede importar en fuentes ACTIVE; si no, 409 `data_source_archived`.
+- **Límites:** documento de 16 MiB como máximo (`nexora.semantic.discovery.max-import-bytes`); se rechaza con 413
+  antes de cargarlo en memoria.
+- **Credenciales:** nunca se almacenan; un objeto `connection` dentro del payload se ignora, como cualquier campo
+  desconocido.
+
 ### 9.2 Qwen (S5)
 
 `InterpretationSuggestionPort.suggest(SuggestionContext) → SuggestionResult`.
@@ -582,6 +626,9 @@ detalle operativo está en el README.
 | D13 | **Bloquear** agregaciones que mezclen monedas sin separación o conversión explícita | **Aprobada** (ajuste 9) | Evita cifras monetarias incorrectas. |
 | D14 | Zona horaria: valor por tenant, sobrescribible por dimensión | **Pendiente** (necesaria en S3) | Afecta a la granularidad temporal de dimensiones. |
 | D15 | En producción, migraciones con un **job independiente** (`SchemaMigrationMain`, mismo JAR, identidad migradora propia) y aplicación con perfil `prod`: Flyway deshabilitado y verificación de mínimo privilegio al arrancar (§8.6) | **Aprobada** (requisitos de I3). Mecanismo concreto (JAR + `PropertiesLauncher`) **pendiente de confirmación** | Las credenciales DDL nunca llegan al proceso de la aplicación. Mismo artefacto ⇒ mismas migraciones y versión de Flyway. Alternativa descartada por ahora: CLI o imagen oficial de Flyway (otra herramienta y otra versión que mantener sincronizadas). Tras D10 se verificó con Spring Boot 4.1.1: `org.springframework.boot.loader.launch.PropertiesLauncher` sigue en el JAR y el job funciona desde el artefacto empaquetado (Flyway 12.4.0). |
+| D16 | Sobre de importación `discovery-api/0.1` (envoltorio de Semantic alrededor de la respuesta 200 de Discovery, sin modificarla) como contrato de S2 | **Implementada** en S2 Basic; sigue siendo **provisional** hasta que Discovery la conozca o la sustituya | Discovery no devuelve el alcance solicitado ni la fecha; el sobre los aporta sin tocar Discovery (D1). Cambios incompatibles ⇒ nueva `contractVersion`. |
+| D17 | Alcance de S2 Basic: tablas, vistas, vistas materializadas, columnas, PK y FK; estado `UNAVAILABLE` solo para esquemas; rutinas, `schema_change` y `TypeCategoryMapper` diferidos | **Implementada** (instrucción de S2 Basic: solo lo necesario para la primera integración) | Prioridad de la prueba de concepto; el historial mínimo lo dan los snapshots y el estado por objeto. |
+| D18 | Escrituras por lotes con `NamedParameterJdbcOperations` en `JdbcPhysicalObjectRepository` (complementa D6) | **Implementada** | `JdbcClient` no tiene API de lotes; una importación puede tocar decenas de miles de objetos. Misma familia Spring JDBC, confinada a `infrastructure.persistence` (ArchUnit). |
 
 ---
 
@@ -601,6 +648,7 @@ detalle operativo está en el README.
 | R10 | Payload importado falsificado | Sin ejecución en Semantic; revalidación en el Motor de consultas; auditoría del importador. |
 | R11 | Visibilidad de catálogo confundida con permiso de datos | Autorización de datos en el Motor de consultas. |
 | R12 | Spring Boot 3.5 sin soporte OSS (D10) | **Mitigado**: migrado a 4.1.1 (soporte OSS hasta el 31-jul-2027). Planificar la siguiente actualización antes de esa fecha. |
+| R14 | El sobre de importación (`discovery-api/0.1`) es un contrato propuesto por Semantic que Discovery aún no conoce; un cambio en la respuesta de Discovery podría pasar inadvertido | Lectura tolerante + validación estructural + fixtures reales; versionar el sobre ante cambios incompatibles (D16) |
 | R13 | Cambios silenciosos de configuración y serialización entre versiones mayores (encontrados en D10: claves `server.error.*` ignoradas y `type` de RFC 7807 omitido) | Verificar en cada actualización mayor con `spring-boot-properties-migrator` y pruebas de contrato de las respuestas (añadidas). |
 
 ---
@@ -648,7 +696,7 @@ scope `basic`; un realm con scopes propios necesita el mapper `oidc-sub-mapper`.
 | I5 — atomicidad de la auditoría | ✅ | `AuditAtomicityIntegrationTest` |
 | I6 — prueba real del emisor | ✅ | Proveedor OIDC local de prueba (`TestOidcProvider`): discovery + JWKS, como en producción |
 | I3 — Flyway fuera de la aplicación en producción | ✅ | `SchemaMigrationMain`/`SchemaMigrator`, `application-prod.yml`, `LeastPrivilegeConfiguration` + `LeastPrivilegeVerifier`, `deploy/postgres/create-roles.sql` (§8.6, D15). Sin cambios en V1–V4 ni migraciones nuevas |
-| I7 — lectura tolerante del JSON de Discovery | Pendiente (S2) | La capa anticorrupción de S2 usará su propio lector |
+| I7 — lectura tolerante del JSON de Discovery | ✅ (S2 Basic) | `JacksonDiscoveredMetadataReader` con mapper propio: payload tolerante, sobre estricto; configuración global intacta |
 
 Resultado tras las correcciones: `mvn clean verify` con 223 pruebas en verde. Verificación manual contra
 Keycloak 26.4: alta del tenant → configuración del UUID en el proveedor → acceso, aislamiento entre tenants y
@@ -688,6 +736,30 @@ idéntico ⇒ `DUPLICATE` sin cambios; columna eliminada ⇒ `OBJECT_REMOVED` y 
 **snapshot parcial no marca objetos fuera de alcance**; esquema solicitado ausente ⇒ `SCHEMA_UNAVAILABLE`
 sin marcar hijos; payload inválido ⇒ ningún cambio persistido; `Orders` ≠ `orders`; comentario malicioso
 inerte y truncado; 413/422; ningún `definition` persistido; FK compuestas entre snapshot, objeto y fuente.
+
+**S2 Basic ✅ (19 oct 2026)** — primera integración de extremo a extremo, alcance reducido:
+
+| Implementado | Diferido a S2 completo |
+|---|---|
+| Sobre + capa anticorrupción (I7), validación, límites | Rutinas (funciones y procedimientos) |
+| `metadata_snapshot` y `physical_object` (V5), claves naturales, ids estables | Tabla `schema_change` y endpoints `…/changes` + reconocimiento |
+| Conciliación por alcance: ACTIVE / MISSING / UNAVAILABLE, reaparición con el mismo id | `TypeCategoryMapper` (categorías de tipo para S3) |
+| Endpoints de importación, historial y consulta de objetos | Llamada directa a Discovery (`DiscoveryClientPort`) |
+
+Criterios verificados con respuestas reales de Discovery:
+- importación completa con 48 objetos;
+- reimportación idéntica ⇒ `UNCHANGED` con los mismos ids;
+- esquema v2 ⇒ 6 añadidos, 2 actualizados y 5 `MISSING`;
+- vuelta a v1 ⇒ 5 reaparecidos con el mismo id;
+- alcance parcial sin tocar otros esquemas;
+- `restricted` (sin `USAGE`) ⇒ `unavailableSchemas`;
+- payload inválido sin efectos, y 413, 422 y 409;
+- aislamiento entre tenants (404), permisos, auditoría y rollback si falla;
+- inmutabilidad y FK compuestas en la base de datos.
+
+Diferencias con el criterio de diseño:
+- la reimportación idéntica produce `UNCHANGED`, no `DUPLICATE`;
+- `Orders` ≠ `orders` lo garantiza la clave natural exacta (pruebas unitarias).
 
 ### S3 — Catálogo y flujo de propuestas
 

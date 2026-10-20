@@ -3,10 +3,14 @@
 Transforma los metadatos técnicos de **Nexora Discovery** en conocimiento empresarial validado, versionado y
 reutilizable por **Nexora Reports**. Arquitectura, decisiones y plan de etapas: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**Estado:** etapa S1 (fundaciones) sobre Spring Boot 4.1.1 y Java 21 — tenants, fuentes de datos, seguridad
-OAuth2/JWT por permisos, aislamiento multiempresa, auditoría append-only, errores RFC 7807 y migraciones de
-producción en un job independiente. Todavía no hay importación de Discovery, catálogo, propuestas, resolución ni
-integración con IA. Estado detallado: [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) · Historial:
+**Estado:** S1 completada y **S2 Basic** implementada, sobre Spring Boot 4.1.1 y Java 21.
+- **S1:** tenants, fuentes de datos, seguridad OAuth2/JWT por permisos, aislamiento multiempresa, auditoría
+  append-only, errores RFC 7807 y migraciones de producción en un job independiente.
+- **S2 Basic:** importación persistente de los metadatos de Nexora Discovery (esquemas, tablas, vistas, columnas,
+  PK y FK) con ids estables e historial.
+- **Pendiente:** catálogo semántico, propuestas, resolución e integración con IA.
+
+Estado detallado: [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) · Historial:
 [docs/CHANGELOG.md](docs/CHANGELOG.md).
 
 Semantic **nunca** se conecta a bases de clientes, ejecuta SQL empresarial ni almacena credenciales.
@@ -138,7 +142,32 @@ Con el perfil `prod`, Flyway está deshabilitado y la aplicación se niega a arr
 - su rol de base de datos puede alterar la estructura: SUPERUSER, CREATEDB, CREATEROLE, BYPASSRLS, propiedad del
   esquema o de sus objetos, `CREATE`, `TRIGGER` o `TRUNCATE`.
 
-## API (S1)
+## Importar metadatos de Nexora Discovery (S2 Basic)
+
+Semantic no llama a Discovery ni recibe credenciales (decisión D1): quien ejecuta Discovery envía su respuesta
+**sin modificarla**, dentro del sobre de importación `discovery-api/0.1`:
+
+```bash
+# 1. Respuesta 200 de Discovery (POST /api/discovery), p. ej. guardada en discovery.json
+# 2. Sobre de importación: requestedSchemas = los "schemas" pedidos a Discovery (omitido o [] = todos)
+jq '{contractVersion: "discovery-api/0.1", discoveredAt: (now | todate),
+     requestedSchemas: ["sales"], payload: .}' discovery.json > import.json
+# 3. Importar en una fuente de datos ACTIVE cuyo engine y databaseName coincidan con la respuesta
+curl -X POST -H "Authorization: Bearer $STEWARD_TOKEN" -H 'Content-Type: application/json' \
+     --data-binary @import.json http://localhost:8080/api/v1/data-sources/<id>/snapshots
+```
+
+- **La respuesta** incluye el resumen de la importación (`observed`, `added`, `updated`, `unchanged`, `missing`,
+  `reappeared`, `unavailableSchemas`) y `outcome` (`APPLIED` o `UNCHANGED`).
+- **Ningún objeto se borra:**
+  - lo que desaparece de un esquema importado queda `MISSING`;
+  - un esquema solicitado que no llega queda `UNAVAILABLE`, sin tocar sus objetos;
+  - lo que reaparece recupera su id.
+- **Lectura tolerante:** los campos de Discovery que Semantic no usa (rutinas, definiciones SQL, valores por
+  defecto o futuros) se ignoran.
+- **Límite de tamaño:** `nexora.semantic.discovery.max-import-bytes` (16 MiB por defecto).
+
+## API
 
 | Método y ruta | Permiso |
 |---|---|
@@ -146,6 +175,9 @@ Con el perfil `prod`, Flyway está deshabilitado y la aplicación se niega a arr
 | `POST /api/v1/data-sources`, `PATCH /api/v1/data-sources/{id}` | `semantic:source:manage` |
 | `GET /api/v1/data-sources`, `GET /api/v1/data-sources/{id}` | `semantic:catalog:read` |
 | `GET /api/v1/audit-events` | `semantic:audit:read` |
+| `POST /api/v1/data-sources/{id}/snapshots` | `semantic:source:manage` |
+| `GET /api/v1/data-sources/{id}/snapshots[/{snapshotId}]` | `semantic:catalog:read` |
+| `GET /api/v1/data-sources/{id}/objects?type&schema&status&parentId` · `GET …/objects/{objectId}` | `semantic:catalog:read` |
 | `GET /actuator/health` | público |
 
 Los `PATCH` exigen `If-Match` con el `ETag` recibido (`428` si falta, `412` si no coincide). Detalle completo de

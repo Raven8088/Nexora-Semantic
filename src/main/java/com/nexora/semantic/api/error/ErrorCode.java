@@ -20,6 +20,10 @@ public enum ErrorCode {
     PRECONDITION_FAILED(HttpStatus.PRECONDITION_FAILED, "The resource has been modified; reload it and retry"),
     PRECONDITION_REQUIRED(HttpStatus.PRECONDITION_REQUIRED, "If-Match header is required"),
     PAYLOAD_TOO_LARGE(HttpStatus.CONTENT_TOO_LARGE, "Request too large"),
+    SNAPSHOT_INVALID(HttpStatus.UNPROCESSABLE_CONTENT, "Snapshot does not satisfy the import contract"),
+    SNAPSHOT_MISMATCH(HttpStatus.UNPROCESSABLE_CONTENT, "Snapshot does not belong to this data source"),
+    UNSUPPORTED_CONTRACT_VERSION(HttpStatus.BAD_REQUEST, "Unsupported import contract version"),
+    DATA_SOURCE_ARCHIVED(HttpStatus.CONFLICT, "Data source is archived"),
     INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "Unexpected error");
 
     private final HttpStatus status;

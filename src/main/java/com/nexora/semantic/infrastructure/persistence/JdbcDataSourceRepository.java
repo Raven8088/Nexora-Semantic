@@ -83,6 +83,16 @@ public class JdbcDataSourceRepository implements DataSourceRepository {
                 .optional();
     }
 
+    /** SELECT ... FOR UPDATE: the application role holds column-level UPDATE privileges, which PostgreSQL requires. */
+    @Override
+    public Optional<DataSource> lockById(TenantId tenantId, DataSourceId id) {
+        return jdbc.sql("SELECT " + COLUMNS + " FROM data_source WHERE tenant_id = :tenantId AND id = :id FOR UPDATE")
+                .param("tenantId", tenantId.value())
+                .param("id", id.value())
+                .query(MAPPER)
+                .optional();
+    }
+
     @Override
     public Page<DataSource> findPage(TenantId tenantId, DataSourceStatus status, PageQuery pageQuery) {
         String where = " WHERE tenant_id = :tenantId" + (status == null ? "" : " AND status = :status");

@@ -4,6 +4,7 @@ import tools.jackson.databind.JsonNode;
 import com.nexora.semantic.application.port.AuditLog;
 import com.nexora.semantic.domain.tenant.Tenant;
 import com.nexora.semantic.domain.tenant.TenantStatus;
+import com.nexora.semantic.support.DiscoveryFixtures;
 import com.nexora.semantic.support.IntegrationTest;
 import com.nexora.semantic.support.TestJwt;
 import org.junit.jupiter.api.BeforeEach;
@@ -115,5 +116,26 @@ class AuditAtomicityIntegrationTest extends IntegrationTest {
         Tenant stored = tenantService.get(tenant.id());
         assertThat(stored.status()).isEqualTo(TenantStatus.ACTIVE);
         assertThat(stored.version()).isZero();
+    }
+
+    @Test
+    void metadataImportIsRolledBackWhenAuditFails() throws Exception {
+        JsonNode created = body(mvc.perform(post("/api/v1/data-sources").header(HttpHeaders.AUTHORIZATION, steward)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("key", "erp", "name", "ERP", "engine", "postgresql", "databaseName", "erp"))))
+                .andExpect(status().isCreated()).andReturn());
+        UUID dataSourceId = UUID.fromString(created.get("id").asString());
+        failAuditing();
+
+        mvc.perform(post("/api/v1/data-sources/" + dataSourceId + "/snapshots").header(HttpHeaders.AUTHORIZATION, steward)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(DiscoveryFixtures.envelope(DiscoveryFixtures.ALL_SCHEMAS)))
+                .andExpect(status().isInternalServerError());
+
+        Map<String, Object> scope = Map.of("t", tenant.id().value(), "d", dataSourceId);
+        assertThat(count("SELECT count(*) FROM metadata_snapshot WHERE tenant_id = :t AND data_source_id = :d", scope))
+                .isZero();
+        assertThat(count("SELECT count(*) FROM physical_object WHERE tenant_id = :t AND data_source_id = :d", scope))
+                .isZero();
     }
 }

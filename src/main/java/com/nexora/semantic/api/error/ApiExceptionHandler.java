@@ -1,12 +1,16 @@
 package com.nexora.semantic.api.error;
 
 import tools.jackson.databind.exc.UnrecognizedPropertyException;
+import com.nexora.semantic.api.web.PayloadTooLargeException;
 import com.nexora.semantic.api.web.PreconditionRequiredException;
 import com.nexora.semantic.domain.shared.DuplicateResourceException;
 import com.nexora.semantic.domain.shared.InvalidValueException;
 import com.nexora.semantic.domain.shared.ResourceNotFoundException;
 import com.nexora.semantic.domain.shared.StaleResourceException;
 import com.nexora.semantic.domain.shared.TenantAccessDeniedException;
+import com.nexora.semantic.domain.source.DataSourceArchivedException;
+import com.nexora.semantic.domain.source.InvalidSnapshotException;
+import com.nexora.semantic.domain.source.SnapshotMismatchException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -71,6 +75,38 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(TenantAccessDeniedException.class)
     ResponseEntity<ProblemDetail> tenantDenied(HttpServletRequest request) {
         return respond(Problems.of(ErrorCode.TENANT_ACCESS_DENIED, request));
+    }
+
+    @ExceptionHandler(PayloadTooLargeException.class)
+    ResponseEntity<ProblemDetail> payloadTooLarge(HttpServletRequest request) {
+        return respond(Problems.of(ErrorCode.PAYLOAD_TOO_LARGE, request));
+    }
+
+    /** Discovery import documents: violations carry JSON paths and rules, never payload values. */
+    @ExceptionHandler(InvalidSnapshotException.class)
+    ResponseEntity<ProblemDetail> invalidSnapshot(InvalidSnapshotException e, HttpServletRequest request) {
+        ErrorCode code = switch (e.kind()) {
+            case MALFORMED -> ErrorCode.MALFORMED_REQUEST;
+            case UNSUPPORTED_CONTRACT_VERSION -> ErrorCode.UNSUPPORTED_CONTRACT_VERSION;
+            case INVALID -> ErrorCode.SNAPSHOT_INVALID;
+        };
+        ProblemDetail problem = Problems.of(code, request);
+        if (!e.violations().isEmpty()) {
+            problem.setProperty("errors", e.violations());
+        }
+        return respond(problem);
+    }
+
+    @ExceptionHandler(SnapshotMismatchException.class)
+    ResponseEntity<ProblemDetail> snapshotMismatch(SnapshotMismatchException e, HttpServletRequest request) {
+        ProblemDetail problem = Problems.of(ErrorCode.SNAPSHOT_MISMATCH, request);
+        problem.setProperty("errors", List.of(error(e.field(), "does not match the data source")));
+        return respond(problem);
+    }
+
+    @ExceptionHandler(DataSourceArchivedException.class)
+    ResponseEntity<ProblemDetail> dataSourceArchived(HttpServletRequest request) {
+        return respond(Problems.of(ErrorCode.DATA_SOURCE_ARCHIVED, request));
     }
 
     /** Raised by method security ({@code @PreAuthorize}) when a permission is missing. */

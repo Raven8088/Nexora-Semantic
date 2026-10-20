@@ -59,7 +59,7 @@ class SchemaMigrationIntegrationTest extends IntegrationTest {
 
     @Test
     void appliesAllMigrationsWithTheMigrationIdentity() {
-        assertThat(firstRunOutput).contains("Applied 4 migration(s)").contains("current version: 4");
+        assertThat(firstRunOutput).contains("Applied 5 migration(s)").contains("current version: 5");
         JdbcClient admin = TestDatabases.asSuperuser(url);
         assertThat(admin.sql("SELECT DISTINCT installed_by FROM flyway_schema_history").query(String.class).list())
                 .containsExactly(TestDatabases.MIGRATOR);
@@ -76,7 +76,7 @@ class SchemaMigrationIntegrationTest extends IntegrationTest {
     void producesTheSameMigrationsAsDevelopmentAndTests() {
         List<String> production = history(TestDatabases.asSuperuser(url));
         List<String> springManaged = history(ownerJdbc());
-        assertThat(production).hasSize(4).isEqualTo(springManaged);
+        assertThat(production).hasSize(5).isEqualTo(springManaged);
     }
 
     @Test
@@ -87,7 +87,8 @@ class SchemaMigrationIntegrationTest extends IntegrationTest {
                          WHERE n.nspname = 'semantic' AND NOT t.tgisinternal ORDER BY tgname""")
                 .query(String.class).list();
         assertThat(triggers).containsExactly("audit_event_no_truncate", "audit_event_no_update_delete",
-                "data_source_immutable_columns", "tenant_immutable_columns");
+                "data_source_immutable_columns", "metadata_snapshot_no_truncate", "metadata_snapshot_no_update_delete",
+                "physical_object_immutable_columns", "tenant_immutable_columns");
     }
 
     @Test
@@ -100,7 +101,7 @@ class SchemaMigrationIntegrationTest extends IntegrationTest {
         ByteArrayOutputStream validateOut = new ByteArrayOutputStream();
         assertThat(run(TestDatabases.migrationEnvironment(url), "validate", validateOut, new ByteArrayOutputStream()))
                 .isEqualTo(SchemaMigrationMain.OK);
-        assertThat(validateOut.toString(StandardCharsets.UTF_8)).contains("is valid; current version: 4");
+        assertThat(validateOut.toString(StandardCharsets.UTF_8)).contains("is valid; current version: 5");
     }
 
     @Test

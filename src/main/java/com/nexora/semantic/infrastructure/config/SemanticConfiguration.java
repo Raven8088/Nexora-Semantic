@@ -4,14 +4,23 @@ import tools.jackson.databind.ObjectMapper;
 import com.nexora.semantic.application.audit.AuditQueryService;
 import com.nexora.semantic.application.port.AuditLog;
 import com.nexora.semantic.application.port.DataSourceRepository;
+import com.nexora.semantic.application.port.DiscoveredMetadataReader;
+import com.nexora.semantic.application.port.MetadataSnapshotRepository;
+import com.nexora.semantic.application.port.PhysicalObjectRepository;
 import com.nexora.semantic.application.port.TenantRepository;
 import com.nexora.semantic.application.source.DataSourceService;
+import com.nexora.semantic.application.source.MetadataImportService;
+import com.nexora.semantic.application.source.PhysicalMetadataQueryService;
 import com.nexora.semantic.application.tenant.TenantService;
+import com.nexora.semantic.infrastructure.discovery.JacksonDiscoveredMetadataReader;
 import com.nexora.semantic.infrastructure.persistence.JdbcAuditLog;
 import com.nexora.semantic.infrastructure.persistence.JdbcDataSourceRepository;
+import com.nexora.semantic.infrastructure.persistence.JdbcMetadataSnapshotRepository;
+import com.nexora.semantic.infrastructure.persistence.JdbcPhysicalObjectRepository;
 import com.nexora.semantic.infrastructure.persistence.JdbcTenantRepository;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcOperations;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 import java.time.Clock;
@@ -56,5 +65,37 @@ public class SemanticConfiguration {
     @Bean
     AuditQueryService auditQueryService(AuditLog auditLog) {
         return new AuditQueryService(auditLog);
+    }
+
+    // --- S2 Basic: Discovery metadata import ---
+
+    @Bean
+    DiscoveredMetadataReader discoveredMetadataReader() {
+        return new JacksonDiscoveredMetadataReader();
+    }
+
+    @Bean
+    MetadataSnapshotRepository metadataSnapshotRepository(JdbcClient jdbcClient, ObjectMapper objectMapper) {
+        return new JdbcMetadataSnapshotRepository(jdbcClient, objectMapper);
+    }
+
+    @Bean
+    PhysicalObjectRepository physicalObjectRepository(JdbcClient jdbcClient, NamedParameterJdbcOperations batch,
+                                                      ObjectMapper objectMapper) {
+        return new JdbcPhysicalObjectRepository(jdbcClient, batch, objectMapper);
+    }
+
+    @Bean
+    MetadataImportService metadataImportService(DataSourceRepository dataSources, DiscoveredMetadataReader reader,
+                                                MetadataSnapshotRepository snapshots, PhysicalObjectRepository objects,
+                                                AuditLog auditLog, Clock clock) {
+        return new MetadataImportService(dataSources, reader, snapshots, objects, auditLog, clock);
+    }
+
+    @Bean
+    PhysicalMetadataQueryService physicalMetadataQueryService(DataSourceRepository dataSources,
+                                                              MetadataSnapshotRepository snapshots,
+                                                              PhysicalObjectRepository objects) {
+        return new PhysicalMetadataQueryService(dataSources, snapshots, objects);
     }
 }
