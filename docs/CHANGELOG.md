@@ -426,3 +426,28 @@ carencias, ninguna de las cuales obligó a relajar validaciones:
 | 37 | Integración real con S4.1 | API `semanticResolutionFailuresAreDistinctFromPlanningFailures` y todas las creaciones (S4.1 recalculado) |
 | 38 | `mvn clean verify` sin regresiones | 510/510 |
 | — | Adicionales | `temporalDimensionsNeedAnAllowedGranularity`, `neverReversesALeftJoin…`, `anInnerJoinAfterALeftJoinIsRejected` |
+
+## 12. INT-3.4 — `valueType` en el catálogo de dimensiones (28 oct 2026)
+
+Cambio mínimo autorizado (decisión D1 = B de INT-3.4) para que Nexora Intelligence conozca la categoría de valor de
+cada dimensión sin llamadas adicionales por columna ni duplicar el mapeo de tipos.
+
+### Añadido
+- `DefinitionValidator.valueType(spec, context)`: categoría (`TypeCategory`) de la columna de una dimensión, con el
+  mismo método privado `category` que ya usa la validación (tipos o motores desconocidos ⇒ `OTHER`). Vacío para
+  conceptos, métricas y columnas que no están en los metadatos cargados.
+- `SemanticCatalogService.EvaluatedDefinition.valueType` (calculado al evaluar la definición con el mismo contexto).
+- `DefinitionDtos.DimensionResponse.valueType`: campo nuevo en `GET /definitions`, `GET /definitions/{id}` y en las
+  respuestas de creación, edición, aprobación y desactivación. Se omite (inclusión no nula) cuando no se conoce.
+
+### Sin cambios
+- Formato `nexora-logical-plan/1`, resolución S4.1, planificación S4.2, migraciones, seguridad y peticiones de la API.
+  No se expone ningún nombre físico adicional. Cambio aditivo: los consumidores existentes (Nexora Reports no lee
+  definiciones) no se ven afectados.
+
+### Verificación
+- `mvn clean verify` ⇒ **BUILD SUCCESS, 517 pruebas, 0 fallos, 0 errores, 0 omitidas** (entorno de Claude; punto
+  de partida 513). Nuevas: 3 unitarias en `DefinitionValidatorTest` y 1 de integración en
+  `SemanticCatalogApiIntegrationTest` (`dimensionsExposeTheValueTypeOfTheirColumn`).
+- Verificado por el usuario en Windows: `mvn clean verify` ⇒ **517 pruebas, 0 fallos, 0 errores, 0 omitidas**
+  (verificación automatizada; sin E2E real con Keycloak todavía).

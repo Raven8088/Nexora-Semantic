@@ -14,6 +14,7 @@ import com.nexora.semantic.domain.catalog.DefinitionStatus;
 import com.nexora.semantic.domain.catalog.DefinitionValidator;
 import com.nexora.semantic.domain.catalog.InvalidDefinitionException;
 import com.nexora.semantic.domain.catalog.SemanticDefinition;
+import com.nexora.semantic.domain.catalog.TypeCategory;
 import com.nexora.semantic.domain.shared.CallerContext;
 import com.nexora.semantic.domain.shared.Page;
 import com.nexora.semantic.domain.shared.PageQuery;
@@ -50,9 +51,11 @@ public class SemanticCatalogService {
      * @param issues     why it cannot be approved or used now (empty when valid)
      * @param usable     APPROVED and without issues: may be used by S4 resolution
      * @param references referenced physical objects, by id (for natural keys in responses)
+     * @param valueType  value category of a dimension's column, as the validator derives it; null for concepts and
+     *                   metrics, and when the column is not among the current physical metadata
      */
     public record EvaluatedDefinition(SemanticDefinition definition, List<DefinitionIssue> issues, boolean usable,
-                                      Map<UUID, PhysicalObject> references) {
+                                      Map<UUID, PhysicalObject> references, TypeCategory valueType) {
     }
 
     private final DataSourceRepository dataSources;
@@ -180,7 +183,8 @@ public class SemanticCatalogService {
         boolean usable = definition.status() == DefinitionStatus.APPROVED && issues.isEmpty();
         Map<UUID, PhysicalObject> references = new LinkedHashMap<>();
         context.objects().forEach(references::put);
-        return new EvaluatedDefinition(definition, new ArrayList<>(issues), usable, references);
+        return new EvaluatedDefinition(definition, new ArrayList<>(issues), usable, references,
+                validator.valueType(definition.spec(), context).orElse(null));
     }
 
     private DataSource lockActive(CallerContext caller, DataSourceId dataSourceId) {

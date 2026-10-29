@@ -180,6 +180,37 @@ class DefinitionValidatorTest {
     }
 
     @Test
+    void valueTypeOfADimensionUsesTheColumnCategory() {
+        SemanticDefinition cliente = concept("cliente", customers, true);
+        assertThat(validator.valueType(new DimensionSpec(pedido.id(), orderDate.id(), DimensionType.TEMPORAL, null,
+                null), context())).contains(TypeCategory.DATE);
+        assertThat(validator.valueType(new DimensionSpec(cliente.id(), createdAt.id(), DimensionType.TEMPORAL, null,
+                null), context())).contains(TypeCategory.TIMESTAMP_TZ);
+        assertThat(validator.valueType(new DimensionSpec(pedido.id(), notes.id(), DimensionType.CATEGORICAL, null,
+                null), context())).contains(TypeCategory.TEXT);
+        assertThat(validator.valueType(new DimensionSpec(pedido.id(), total.id(), DimensionType.CATEGORICAL, null,
+                null), context())).contains(TypeCategory.NUMERIC);
+    }
+
+    @Test
+    void valueTypeFailsClosedForUnknownTypesAndEngines() {
+        assertThat(validator.valueType(new DimensionSpec(pedido.id(), attributes.id(), DimensionType.CATEGORICAL,
+                null, null), context())).contains(TypeCategory.OTHER);
+        DefinitionValidator.Context otherEngine = new DefinitionValidator.Context(new EngineCode("mysql"), objects,
+                definitions);
+        assertThat(validator.valueType(new DimensionSpec(pedido.id(), notes.id(), DimensionType.CATEGORICAL, null,
+                null), otherEngine)).contains(TypeCategory.OTHER);
+    }
+
+    @Test
+    void valueTypeIsEmptyForOtherKindsAndUnknownColumns() {
+        assertThat(validator.valueType(new ConceptSpec(orders.id()), context())).isEmpty();
+        assertThat(validator.valueType(new MetricSpec(pedido.id(), Aggregation.SUM, total.id()), context())).isEmpty();
+        assertThat(validator.valueType(new DimensionSpec(pedido.id(), UUID.randomUUID(), DimensionType.CATEGORICAL,
+                null, null), context())).isEmpty();
+    }
+
+    @Test
     void usageRequiresAnApprovedConcept() {
         SemanticDefinition draftConcept = concept("borrador", orders, false);
         assertThat(codes(new MetricSpec(draftConcept.id(), Aggregation.COUNT, null))).isEmpty();

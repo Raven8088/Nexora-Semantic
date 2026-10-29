@@ -9,6 +9,7 @@ import com.nexora.semantic.domain.catalog.DefinitionStatus;
 import com.nexora.semantic.domain.catalog.DimensionType;
 import com.nexora.semantic.domain.catalog.SemanticDefinition;
 import com.nexora.semantic.domain.catalog.TimeGranularity;
+import com.nexora.semantic.domain.catalog.TypeCategory;
 import com.nexora.semantic.domain.shared.InvalidValueException;
 import com.nexora.semantic.domain.source.PhysicalObject;
 import jakarta.validation.Valid;
@@ -111,8 +112,14 @@ public final class DefinitionDtos {
     public record MetricResponse(UUID conceptId, Aggregation aggregation, UUID columnId, String columnNaturalKey) {
     }
 
+    /**
+     * @param valueType logical value category of the column ({@code NUMERIC}, {@code TEXT}, {@code BOOLEAN},
+     *                  {@code DATE}, {@code TIMESTAMP}, {@code TIMESTAMP_TZ}, {@code TIME}, {@code UUID} or
+     *                  {@code OTHER} for unknown types), derived exactly as validation and resolution derive it;
+     *                  null when the column is not in the current physical metadata
+     */
     public record DimensionResponse(UUID conceptId, UUID columnId, String columnNaturalKey, DimensionType type,
-                                    List<TimeGranularity> granularities, String timeZone) {
+                                    TypeCategory valueType, List<TimeGranularity> granularities, String timeZone) {
     }
 
     /**
@@ -154,7 +161,7 @@ public final class DefinitionDtos {
                 case DefinitionSpec.MetricSpec m -> metric = new MetricResponse(m.conceptId(), m.aggregation(),
                         m.columnId(), m.columnId() == null ? null : naturalKey(refs, m.columnId()));
                 case DefinitionSpec.DimensionSpec dim -> dimension = new DimensionResponse(dim.conceptId(),
-                        dim.columnId(), naturalKey(refs, dim.columnId()), dim.type(),
+                        dim.columnId(), naturalKey(refs, dim.columnId()), dim.type(), evaluated.valueType(),
                         dim.granularities().stream().sorted().toList(),
                         dim.timeZone() == null ? null : dim.timeZone().getId());
             }

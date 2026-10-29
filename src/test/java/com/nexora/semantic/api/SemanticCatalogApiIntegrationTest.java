@@ -206,6 +206,40 @@ class SemanticCatalogApiIntegrationTest extends IntegrationTest {
     }
 
     @Test
+    void dimensionsExposeTheValueTypeOfTheirColumn() throws Exception {
+        String pedidoId = approvedConcept("pedido", "\"sales\".\"orders\"").get("id").asString();
+        String clienteId = approvedConcept("cliente", "\"sales\".\"customers\"").get("id").asString();
+        JsonNode fecha = approved(created(editor, dimension("fecha_pedido", pedidoId,
+                object("\"sales\".\"orders\".\"order_date\""), "TEMPORAL", null)));
+        assertThat(fecha.get("dimension").get("valueType").asString()).isEqualTo("DATE");
+        approved(created(editor, dimension("notas", pedidoId,
+                object("\"sales\".\"orders\".\"notes\""), "CATEGORICAL", null)));
+        approved(created(editor, dimension("importe", pedidoId,
+                object("\"sales\".\"orders\".\"total\""), "CATEGORICAL", null)));
+        JsonNode alta = created(editor, dimension("alta_cliente", clienteId,
+                object("\"sales\".\"customers\".\"created_at\""), "TEMPORAL", null));
+        assertThat(alta.get("dimension").get("valueType").asString()).isEqualTo("TIMESTAMP_TZ");
+        JsonNode ventas = approved(created(editor, metric("ventas_totales", pedidoId, "SUM",
+                object("\"sales\".\"orders\".\"total\""))));
+        assertThat(ventas.get("metric").has("valueType")).isFalse();
+
+        JsonNode page = body(mvc.perform(get(definitions()).param("kind", "DIMENSION").param("status", "APPROVED")
+                        .header(HttpHeaders.AUTHORIZATION, viewer))
+                .andExpect(status().isOk()).andReturn());
+        Map<String, String> types = new HashMap<>();
+        page.get("items").forEach(i -> types.put(i.get("key").asString(),
+                i.get("dimension").get("valueType").asString()));
+        assertThat(types).containsExactlyInAnyOrderEntriesOf(Map.of("fecha_pedido", "DATE", "notas", "TEXT",
+                "importe", "NUMERIC"));
+        // The new field adds no physical name: the dimension block keeps the same physical references as before.
+        java.util.Set<String> fields = new java.util.TreeSet<>();
+        page.get("items").get(0).get("dimension").propertyNames().forEach(fields::add);
+        assertThat(fields).isSubsetOf("conceptId", "columnId", "columnNaturalKey", "type", "valueType",
+                "granularities", "timeZone");
+        assertThat(fetch(fecha.get("id").asString()).get("dimension").get("valueType").asString()).isEqualTo("DATE");
+    }
+
+    @Test
     void metricsNeedAnApprovedConcept() throws Exception {
         JsonNode draftConcept = created(editor, concept("pedido", object("\"sales\".\"orders\"")));
         JsonNode metric = created(editor, metric("numero", draftConcept.get("id").asString(), "COUNT", null));

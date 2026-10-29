@@ -15,6 +15,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -106,6 +107,19 @@ public final class DefinitionValidator {
         return new DimensionSpec(dimension.conceptId(), dimension.columnId(), dimension.type(),
                 dimension.granularities().isEmpty() ? EnumSet.allOf(TimeGranularity.class) : dimension.granularities(),
                 dimension.timeZone() == null && withTimeZone ? DEFAULT_TIME_ZONE : dimension.timeZone());
+    }
+
+    /**
+     * Logical value category of a dimension's column, with the same mapping this validator applies to it
+     * ({@link TypeCategory#of}: unknown engines or types are {@link TypeCategory#OTHER}). Empty for concepts and
+     * metrics, and when the column is not among the loaded physical objects.
+     */
+    public Optional<TypeCategory> valueType(DefinitionSpec spec, Context context) {
+        if (!(spec instanceof DimensionSpec dimension)) {
+            return Optional.empty();
+        }
+        PhysicalObject column = context.objects().get(dimension.columnId());
+        return column == null ? Optional.empty() : Optional.of(category(column, context));
     }
 
     private void dimension(DimensionSpec dimension, Context context, List<DefinitionIssue> issues) {

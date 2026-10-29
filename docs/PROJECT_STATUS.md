@@ -5,7 +5,7 @@
 
 | Campo | Valor |
 |---|---|
-| Última actualización | 20 oct 2026 |
+| Última actualización | 28 oct 2026 (INT-3.4: `valueType` en el catálogo) |
 | Versión del artefacto | `0.1.0-SNAPSHOT` |
 | Etapa actual | **S4.2** — planificación lógica segura con planes inmutables: implementada y probada; pendiente de revisión |
 | Próxima tarea autorizada | **Ninguna.** Cualquier etapa posterior (Reports, Intelligence, estrategias avanzadas) requiere autorización expresa |
@@ -37,6 +37,7 @@ No se registran fechas, cifras ni resultados que no se hayan comprobado.
 | S2 completo / S3 completo | **Pendiente / bloqueado** (sin autorización) | Rutinas, `schema_change`; reglas, sinónimos, propuestas y versiones |
 | S4.1 — Resolución semántica | **Implementada y probada**; S4.2 se autorizó sobre esta base | Sin migración; D28–D32 |
 | S4.2 — Planificación lógica segura | **Implementada y probada**; pendiente de revisión | V8; D33–D40 |
+| INT-3.4 (Semantic) — `valueType` en dimensiones del catálogo | **Implementado y probado**; `mvn clean verify` verificado en Windows por el usuario (pruebas automatizadas; sin E2E real con Keycloak) | Cambio aditivo de `DimensionResponse`; sin migración |
 | Posteriores (Reports, Intelligence, drill-across, unidades) | **Bloqueadas** | Requieren autorización expresa |
 | S5 — IA (Qwen) y endurecimiento | **Bloqueada** | Requiere autorización expresa para la IA |
 
@@ -165,7 +166,14 @@ Pruebas añadidas en S3 Basic (51):
 
 `ProductionProfileIntegrationTest` se amplió con importación y aprobación en el perfil `prod`.
 
-**Última verificación** (20 oct 2026, 13:18): `mvn clean verify` ⇒ **BUILD SUCCESS, 510 pruebas, 0 fallos,
+Pruebas añadidas en INT-3.4 (4): `DefinitionValidatorTest` (+3) y `SemanticCatalogApiIntegrationTest` (+1).
+Recuento total tras INT-3.4: **517** (513 antes del cambio).
+
+**Verificación INT-3.4** (28 oct 2026, entorno de Claude): `mvn clean verify` ⇒ **BUILD SUCCESS, 517 pruebas,
+0 fallos, 0 errores, 0 omitidas**. Repetida por el usuario en Windows: **517 pruebas, 0 fallos, 0 errores, 0 omitidas**
+(verificación automatizada; todavía no existe un E2E real con Keycloak para INT-3.4).
+
+**Última verificación anterior** (20 oct 2026, 13:18): `mvn clean verify` ⇒ **BUILD SUCCESS, 510 pruebas, 0 fallos,
 0 errores, 0 omitidas** (punto de partida de S4.2: 475).
 
 ## Problemas abiertos
